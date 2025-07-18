@@ -5,14 +5,30 @@
     <vendor>ttarasiewicz</vendor>
 
     <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.modules.python</depends>
+<!--    <depends>com.intellij.modules.python-core-capable</depends>-->
+    <depends>org.jetbrains.plugins.yaml</depends>
 
     <resource-bundle>messages.MyBundle</resource-bundle>
 
     <extensions defaultExtensionNs="com.intellij">
-        <toolWindow factoryClass="com.github.ttarasiewicz.srforgeassistant.toolWindow.MyToolWindowFactory" id="MyToolWindow"/>
+        <completion.contributor language="yaml" implementationClass="com.github.ttarasiewicz.srforgeassistant.yaml.YamlTargetCompletionContributor"/>
+        <psi.referenceContributor language="yaml" implementation="com.github.ttarasiewicz.srforgeassistant.yaml.YamlTargetReferenceContributor"/>
+        <annotator language="yaml" implementationClass="com.github.ttarasiewicz.srforgeassistant.yaml.YamlTargetAnnotator"/>
+        <psi.treeChangeListener implementation="com.github.ttarasiewicz.srforgeassistant.yaml.targetParamsCompletion.YamlTargetPsiListener"/>
+        <projectConfigurable
+                parentId="tools"
+                instance="com.github.ttarasiewicz.srforgeassistant.settings.MyPluginSettingsConfigurable"
+                id="com.github.ttarasiewicz.srforgeassistant.settings.MyPluginSettingsConfigurable"
+                nonDefaultProject="true"
+                displayName="SR-Forge Assistant Settings"/>
+        <codeInsight.lineMarkerProvider language="yaml" implementationClass="com.github.ttarasiewicz.srforgeassistant.yaml.YamlParamLineMarkerProvider"/>
+<!--        <editorFactoryListener implementation="com.github.ttarasiewicz.srforgeassistant.yaml.YamlEditorFactoryListener" />-->
+<!--        <intentionAction>-->
+<!--            <language>yaml</language>-->
+<!--            <className>com.github.ttarasiewicz.srforgeassistant.yaml.targetParamsCompletion.InsertParamsIntention</className>-->
+<!--            <category>Insert</category>-->
+<!--        </intentionAction>-->
+<!--        <initProjectActivity implementation="com.github.ttarasiewicz.srforgeassistant.yaml.MyStartupActivity"/>-->
     </extensions>
-
-    <applicationListeners>
-        <listener class="com.github.ttarasiewicz.srforgeassistant.listeners.MyApplicationActivationListener" topic="com.intellij.openapi.application.ApplicationActivationListener"/>
-    </applicationListeners>
 </idea-plugin>
