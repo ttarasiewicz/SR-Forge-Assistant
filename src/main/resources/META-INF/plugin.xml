@@ -1,18 +1,27 @@
-<!-- Plugin Configuration File. Read more: https://plugins.jetbrains.com/docs/intellij/plugin-configuration-file.html -->
 <idea-plugin>
     <id>com.github.ttarasiewicz.srforgeassistant</id>
     <name>SR-Forge-Assistant</name>
     <vendor>ttarasiewicz</vendor>
 
+
+    <!-- Platform/module dependencies -->
     <depends>com.intellij.modules.platform</depends>
+    <!-- Python module present in PyCharm & IDEA with Python plugin -->
+    <depends>com.intellij.modules.python</depends>
+    <!-- YAML language plugin -->
+    <depends>org.jetbrains.plugins.yaml</depends>
 
-    <resource-bundle>messages.MyBundle</resource-bundle>
-
-    <extensions defaultExtensionNs="com.intellij">
-        <toolWindow factoryClass="com.github.ttarasiewicz.srforgeassistant.toolWindow.MyToolWindowFactory" id="MyToolWindow"/>
+    <extensions defaultExtensionNs="com.intellij.platform.backend.documentation">
+        <targetProvider implementation="com.github.ttarasiewicz.srforgeassistant.YamlTargetDocumentationProvider"/>
+        <linkHandler implementation="com.github.ttarasiewicz.srforgeassistant.PyClassDocLinkHandler"/>
     </extensions>
 
-    <applicationListeners>
-        <listener class="com.github.ttarasiewicz.srforgeassistant.listeners.MyApplicationActivationListener" topic="com.intellij.openapi.application.ApplicationActivationListener"/>
-    </applicationListeners>
+    <extensions defaultExtensionNs="com.intellij">
+        <completion.contributor
+                language="yaml"
+                implementationClass="com.github.ttarasiewicz.srforgeassistant.YamlTargetCompletionContributor"/>
+        <psi.referenceContributor
+                language="yaml"
+                implementation="com.github.ttarasiewicz.srforgeassistant.YamlTargetReferenceContributor"/>
+    </extensions>
 </idea-plugin>
