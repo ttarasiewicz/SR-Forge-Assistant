@@ -1,6 +1,6 @@
 plugins {
-    kotlin("jvm") version "2.1.0"    // was 1.9.x
-    id("org.jetbrains.intellij.platform") version "2.7.2" // or newer 2.x is fine
+    kotlin("jvm") version "2.3.0"
+    id("org.jetbrains.intellij.platform") version "2.11.0"
 }
 
 
@@ -21,15 +21,11 @@ kotlin {
 
 dependencies {
     intellijPlatform {
-// Target the selected IDE + version from gradle.properties
-
-        val type = providers.gradleProperty("platformType").get()
         val ver = providers.gradleProperty("platformVersion").get()
-        create(type, ver)
+        pycharm(ver) { useInstaller = false }
 
-
-// YAML plugin is a bundled plugin we depend on
         bundledPlugin("org.jetbrains.plugins.yaml")
+        bundledPlugin("PythonCore")
         bundledPlugin("Pythonid")
 
         javaCompiler()
