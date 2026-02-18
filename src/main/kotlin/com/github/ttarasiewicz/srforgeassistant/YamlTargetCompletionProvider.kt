@@ -110,11 +110,14 @@ class YamlTargetCompletionProvider : CompletionProvider<CompletionParameters>() 
                     // Discover library packages for root package suggestions + re-export detection
                     session.discoverPackageEdges(scopes.libraries)
 
-                    // Also search libraries for class/function suggestions (AdamW, Module, etc.)
+                    // Search library classes (AdamW, Module, etc.) — require startsWith match
                     if (needle.length >= 3) {
-                        session.processKeys(filteredKeys, scopes.libraries, { true }, buildFullEdges = true)
-                        session.processFunctionKeys(filteredFuncKeys, scopes.libraries, { true }, buildFullEdges = true)
+                        val libClassKeys = allKeys.asSequence()
+                            .filter { it.startsWith(term, ignoreCase = true) }
+                            .toList()
+                        session.processKeys(libClassKeys, scopes.libraries, { true }, buildFullEdges = true)
                     }
+                    // Don't search library functions in non-dotted mode — too noisy
                 }
 
                 when {
@@ -373,7 +376,19 @@ class YamlTargetCompletionProvider : CompletionProvider<CompletionParameters>() 
         }
 
         private fun addPackageEdge(base: String, seg: String) {
+            val fqn = if (base.isEmpty()) seg else "$base.$seg"
+            if (isJunkPath(fqn)) return
             packageEdges.computeIfAbsent(base) { hashSetOf() }.add(seg)
+        }
+
+        /** Filter out build artifacts, internal packages, and other noise. */
+        private fun isJunkPath(qualified: String): Boolean {
+            // Build artifacts (setup.py build creates build/lib/ mirrors)
+            if (qualified.startsWith("build.") || qualified.contains(".build.lib.")) return true
+            // Python internals and packaging tools
+            val root = qualified.substringBefore('.')
+            if (root in JUNK_ROOTS) return true
+            return false
         }
 
         /** Get the names re-exported by a package's __init__.py (cached per session). */
@@ -417,6 +432,7 @@ class YamlTargetCompletionProvider : CompletionProvider<CompletionParameters>() 
         }
 
         private fun addClassSuggestion(qualified: String) {
+            if (isJunkPath(qualified)) return
             val preferred = preferredQualifiedName(qualified)
             if (!seenClasses.add(preferred)) return
             val simple = preferred.substringAfterLast('.')
@@ -464,6 +480,7 @@ class YamlTargetCompletionProvider : CompletionProvider<CompletionParameters>() 
         }
 
         private fun addFunctionSuggestion(qualified: String) {
+            if (isJunkPath(qualified)) return
             val preferred = preferredQualifiedName(qualified)
             if (!seenFunctions.add(preferred)) return
             val simple = preferred.substringAfterLast('.')
@@ -543,6 +560,17 @@ class YamlTargetCompletionProvider : CompletionProvider<CompletionParameters>() 
     companion object {
         private val PRIORITY_KEY: Key<Double> = Key.create("srforge.yamlTargetPriority")
         private val TYPE_KEY: Key<Int> = Key.create("srforge.yamlTargetType")
+
+        /** Root package names that should never appear in _target: suggestions. */
+        private val JUNK_ROOTS = setOf(
+            "build", "dist", "egg", "install",
+            "pip", "setuptools", "_distutils_hack", "distutils", "pkg_resources",
+            "IPython", "ipykernel", "ipywidgets", "jupyter", "jupyter_client",
+            "jupyter_core", "notebook", "nbformat", "nbconvert", "traitlets",
+            "pygments", "pydevd", "debugpy", "_pydevd_bundle",
+            "test", "tests", "_pytest", "pytest"
+        )
+
         fun stripDummy(s: String): String = s
             .replace(CompletionUtilCore.DUMMY_IDENTIFIER_TRIMMED, "")
             .replace(CompletionUtilCore.DUMMY_IDENTIFIER, "")

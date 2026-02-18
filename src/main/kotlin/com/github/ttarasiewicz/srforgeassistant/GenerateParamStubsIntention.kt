@@ -1,28 +1,31 @@
 package com.github.ttarasiewicz.srforgeassistant
 
-import com.intellij.codeInsight.intention.PsiElementBaseIntentionAction
+import com.intellij.codeInsight.intention.IntentionAction
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.Project
 import com.intellij.psi.PsiElement
+import com.intellij.psi.PsiFile
 import com.intellij.psi.util.PsiTreeUtil
 import org.jetbrains.yaml.YAMLElementGenerator
 import org.jetbrains.yaml.psi.YAMLKeyValue
 import org.jetbrains.yaml.psi.YAMLMapping
-import org.jetbrains.yaml.psi.YAMLScalar
 
 /**
  * Alt+Enter intention that generates parameter stubs for the `_target:` class/function.
- * Works when the caret is on the `_target:` line or inside the `params:` mapping.
+ * Works anywhere inside a YAML block that contains a `_target:` key.
  */
-class GenerateParamStubsIntention : PsiElementBaseIntentionAction() {
+class GenerateParamStubsIntention : IntentionAction {
 
     override fun getFamilyName(): String = "SR-Forge Assistant"
     override fun getText(): String = "Generate parameter stubs for _target"
+    override fun startInWriteAction(): Boolean = true
 
-    override fun isAvailable(project: Project, editor: Editor?, element: PsiElement): Boolean {
+    override fun isAvailable(project: Project, editor: Editor?, file: PsiFile?): Boolean {
+        if (file == null || editor == null) return false
         if (DumbService.isDumb(project)) return false
         return try {
+            val element = file.findElementAt(editor.caretModel.offset) ?: return false
             val context = findContext(element) ?: return false
             val allParams = ParamUtils.resolveParamsFromTargetMapping(context.targetMapping) ?: return false
             val existing = context.paramsMapping?.let { ParamUtils.existingParamNames(it) } ?: emptySet()
@@ -32,7 +35,9 @@ class GenerateParamStubsIntention : PsiElementBaseIntentionAction() {
         }
     }
 
-    override fun invoke(project: Project, editor: Editor?, element: PsiElement) {
+    override fun invoke(project: Project, editor: Editor?, file: PsiFile?) {
+        if (file == null || editor == null) return
+        val element = file.findElementAt(editor.caretModel.offset) ?: return
         val context = findContext(element) ?: return
         val allParams = ParamUtils.resolveParamsFromTargetMapping(context.targetMapping) ?: return
         val existing = context.paramsMapping?.let { ParamUtils.existingParamNames(it) } ?: emptySet()
@@ -86,10 +91,8 @@ class GenerateParamStubsIntention : PsiElementBaseIntentionAction() {
 
     /**
      * Walk up the PSI tree to find a mapping that contains `_target:`.
-     * Works from these caret positions:
-     *   - On the `_target:` key or its value
-     *   - On the `params:` key
-     *   - Inside the `params:` mapping (on a child key or value)
+     * Works from any position within the block: _target key/value, params key,
+     * individual param keys/values, or whitespace between them.
      */
     private fun findContext(element: PsiElement): IntentionContext? {
         var current: PsiElement? = element

@@ -41,6 +41,7 @@ intellijPlatform {
         }
         name = providers.gradleProperty("pluginName").get()
     }
+    buildSearchableOptions = false
 }
 
 
