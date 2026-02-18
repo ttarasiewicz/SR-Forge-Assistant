@@ -31,6 +31,10 @@
         <typedHandler
                 implementation="com.github.ttarasiewicz.srforgeassistant.InterpolationTypedHandler"/>
 
+        <lang.foldingBuilder
+                language="yaml"
+                implementationClass="com.github.ttarasiewicz.srforgeassistant.InterpolationFoldingBuilder"/>
+
         <codeInsight.lineMarkerProvider
                 language="yaml"
                 implementationClass="com.github.ttarasiewicz.srforgeassistant.TargetParamStubsLineMarkerProvider"/>
@@ -55,5 +59,22 @@
                 implementationClass="com.github.ttarasiewicz.srforgeassistant.UnknownParamNameInspection"
                 enabledByDefault="true"
                 level="WARNING"/>
+
+        <postStartupActivity
+                implementation="com.github.ttarasiewicz.srforgeassistant.InterpolationFoldStartup"/>
+
+        <editorNotificationProvider
+                implementation="com.github.ttarasiewicz.srforgeassistant.SrForgeEditorNotificationProvider"/>
     </extensions>
+
+    <actions>
+        <action id="SrForgeAssistant.ToggleInterpolationFolds"
+                class="com.github.ttarasiewicz.srforgeassistant.ToggleInterpolationFoldsAction"
+                text="Toggle Interpolation Folds"
+                icon="AllIcons.Actions.Collapseall"
+                description="Fold or unfold all interpolation expressions in the current YAML file">
+            <add-to-group group-id="FoldingGroup" anchor="last"/>
+            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+        </action>
+    </actions>
 </idea-plugin>

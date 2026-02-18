@@ -380,6 +380,275 @@ class YamlInterpolationCompletionContributor : CompletionContributor() {
             return result.sortedBy { it.segment.lowercase() }
         }
 
+        /**
+         * Count elements in an inline YAML list like `[1, 2, 3]`.
+         * Handles nested brackets/braces so commas inside them aren't counted.
+         */
+        private fun countInlineElements(s: String): Int {
+            if (s.length < 2) return 0
+            val content = s.substring(1, s.length - 1).trim()
+            if (content.isEmpty()) return 0
+            var depth = 0
+            var count = 1
+            for (ch in content) {
+                when (ch) {
+                    '[', '{' -> depth++
+                    ']', '}' -> depth--
+                    ',' -> if (depth == 0) count++
+                }
+            }
+            return count
+        }
+
+        /**
+         * Build a content-aware preview for a block sequence.
+         * - Items with `_target`: show short class names, e.g. `[SetAttribute, ChooseImages, ...+3 more]`
+         * - Scalar items: show values, e.g. `[MagNAt, ProbaV, ...+5 more]`
+         * - Other mappings: fall back to `[N items]`
+         */
+        private fun buildSequencePreview(
+            lines: List<String>,
+            startLineIdx: Int,
+            endLineIdx: Int
+        ): String {
+            val ranges = findDashItemRanges(lines, startLineIdx, endLineIdx)
+            if (ranges.isEmpty()) return "[]"
+
+            val maxPreview = 2
+            val previews = ArrayList<String>()
+            var hasTargets = false
+            var hasScalars = false
+            var hasMappings = false
+
+            for ((i, range) in ranges.withIndex()) {
+                if (i >= maxPreview) break
+                val (itemStart, itemEnd) = range
+                val itemKeys = parseKeysInDashItem(lines, itemStart, itemEnd)
+
+                if (itemKeys.isEmpty()) {
+                    hasScalars = true
+                    val scalar = extractDashScalar(lines, itemStart)
+                    if (scalar != null) previews.add(scalar)
+                } else {
+                    hasMappings = true
+                    val targetKey = itemKeys.firstOrNull { it.key == "_target" }
+                    if (targetKey != null && targetKey.rest.isNotEmpty()) {
+                        hasTargets = true
+                        previews.add(targetKey.rest.substringAfterLast('.'))
+                    } else {
+                        previews.add("{...}")
+                    }
+                }
+            }
+
+            // Fall back to plain count for mixed/unparseable content
+            if (previews.isEmpty()) return "[${ranges.size} items]"
+
+            val remaining = ranges.size - previews.size
+            return if (remaining > 0) {
+                "[${previews.joinToString(", ")}, ...+$remaining more]"
+            } else {
+                "[${previews.joinToString(", ")}]"
+            }
+        }
+
+        private fun stripYamlQuotes(s: String): String {
+            if (s.length >= 2) {
+                if ((s.first() == '"' && s.last() == '"') ||
+                    (s.first() == '\'' && s.last() == '\'')) {
+                    return s.substring(1, s.length - 1)
+                }
+            }
+            return s
+        }
+
+        private val SINGLE_INTERPOLATION = Regex("""^[$%]\{([^}]+)}$""")
+
+        /**
+         * Resolve the value at [path] within the YAML [text].
+         * If the resolved value is itself an interpolation reference, resolves recursively.
+         * Cycle detection prevents infinite loops.
+         */
+        fun resolveValueFromText(text: String, path: String): String? {
+            return resolveValueRecursive(text, path, mutableSetOf())
+        }
+
+        private fun resolveValueRecursive(text: String, path: String, visited: MutableSet<String>): String? {
+            if (!visited.add(path)) return null // cycle detected
+            val value = resolveValueDirect(text, path) ?: return null
+            val inner = SINGLE_INTERPOLATION.matchEntire(value)
+            if (inner != null) {
+                val innerPath = inner.groupValues[1].trim()
+                return resolveValueRecursive(text, innerPath, visited) ?: value
+            }
+            return value
+        }
+
+        private fun resolveValueDirect(text: String, path: String): String? {
+            if (path.isEmpty()) return null
+            val lines = text.lines()
+
+            // Phase 1: Parse all non-dash key lines
+            val keyLines = ArrayList<KeyLine>()
+            for ((idx, line) in lines.withIndex()) {
+                val trimmed = line.trimStart()
+                if (trimmed.isEmpty() || trimmed.startsWith('#') || trimmed.startsWith('-')) continue
+                val colonIdx = trimmed.indexOf(':')
+                if (colonIdx <= 0) continue
+                val key = trimmed.substring(0, colonIdx).trim()
+                if (key.isEmpty()) continue
+                if (key.any { !it.isLetterOrDigit() && it != '_' && it != '-' && it != '.' }) continue
+                val indent = line.length - trimmed.length
+                val rest = trimmed.substring(colonIdx + 1).trim()
+                keyLines.add(KeyLine(idx, indent, key, rest))
+            }
+
+            val segments = path.split('.')
+            if (segments.isEmpty()) return null
+            val parentSegments = segments.dropLast(1)
+            val leafSegment = segments.last()
+
+            // Phase 2: Navigate to parent scope
+            var rangeStart = 0
+            var rangeEnd = keyLines.size
+            var targetIndent = 0
+            var scopeEndLineIdx = lines.size
+            var dashItemKeys: List<KeyLine>? = null
+            var pendingSequenceLineIdx: Int? = null
+            var pendingSequenceEndLineIdx = 0
+
+            for (segment in parentSegments) {
+                if (pendingSequenceLineIdx != null) {
+                    val listIndex = segment.toIntOrNull() ?: return null
+                    val ranges = findDashItemRanges(lines, pendingSequenceLineIdx, pendingSequenceEndLineIdx)
+                    if (listIndex >= ranges.size) return null
+                    val (itemStart, itemEnd) = ranges[listIndex]
+                    val itemKeys = parseKeysInDashItem(lines, itemStart, itemEnd)
+                    if (itemKeys.isEmpty()) return null
+                    dashItemKeys = itemKeys
+                    rangeStart = 0
+                    rangeEnd = itemKeys.size
+                    targetIndent = itemKeys.minOf { it.indent }
+                    scopeEndLineIdx = itemEnd
+                    pendingSequenceLineIdx = null
+                    continue
+                }
+
+                val (keyName, bracketIndex) = parsePathSegment(segment)
+                val activeKeys = dashItemKeys ?: keyLines
+                val parentPos = (rangeStart until rangeEnd).firstOrNull {
+                    activeKeys[it].indent == targetIndent && activeKeys[it].key == keyName
+                } ?: return null
+                val parentLineIdx = activeKeys[parentPos].lineIdx
+                val blockEnd = ((parentPos + 1) until rangeEnd).firstOrNull {
+                    activeKeys[it].indent <= targetIndent
+                } ?: rangeEnd
+                val blockEndLineIdx = if (blockEnd < rangeEnd) activeKeys[blockEnd].lineIdx else scopeEndLineIdx
+
+                if (bracketIndex != null) {
+                    val ranges = findDashItemRanges(lines, parentLineIdx, blockEndLineIdx)
+                    if (bracketIndex >= ranges.size) return null
+                    val (itemStart, itemEnd) = ranges[bracketIndex]
+                    val itemKeys = parseKeysInDashItem(lines, itemStart, itemEnd)
+                    if (itemKeys.isEmpty()) return null
+                    dashItemKeys = itemKeys
+                    rangeStart = 0
+                    rangeEnd = itemKeys.size
+                    targetIndent = itemKeys.minOf { it.indent }
+                    scopeEndLineIdx = itemEnd
+                } else if (isSequenceContent(lines, parentLineIdx, blockEndLineIdx)) {
+                    pendingSequenceLineIdx = parentLineIdx
+                    pendingSequenceEndLineIdx = blockEndLineIdx
+                } else {
+                    rangeStart = parentPos + 1
+                    rangeEnd = blockEnd
+                    val childIndent = (rangeStart until rangeEnd).minOfOrNull { activeKeys[it].indent }
+                        ?: return null
+                    targetIndent = childIndent
+                    scopeEndLineIdx = blockEndLineIdx
+                }
+            }
+
+            // Phase 3: Find leaf and extract value
+            if (pendingSequenceLineIdx != null) {
+                val listIndex = leafSegment.toIntOrNull() ?: return null
+                val ranges = findDashItemRanges(lines, pendingSequenceLineIdx, pendingSequenceEndLineIdx)
+                if (listIndex >= ranges.size) return null
+                val (itemStart, itemEnd) = ranges[listIndex]
+                val itemKeys = parseKeysInDashItem(lines, itemStart, itemEnd)
+                return if (itemKeys.isEmpty()) {
+                    extractDashScalar(lines, itemStart)
+                } else {
+                    val first = itemKeys[0]
+                    if (first.key == "_target" && first.rest.isNotEmpty()) {
+                        first.rest.substringAfterLast('.')
+                    } else "{...}"
+                }
+            }
+
+            val (leafKeyName, leafBracketIndex) = parsePathSegment(leafSegment)
+            val activeKeys = dashItemKeys ?: keyLines
+            val targetPos = (rangeStart until rangeEnd).firstOrNull {
+                activeKeys[it].indent == targetIndent && activeKeys[it].key == leafKeyName
+            } ?: return null
+
+            val kl = activeKeys[targetPos]
+            val nextSibling = ((targetPos + 1) until rangeEnd).firstOrNull {
+                activeKeys[it].indent <= targetIndent
+            } ?: rangeEnd
+            val nextSiblingLineIdx = if (nextSibling < rangeEnd) activeKeys[nextSibling].lineIdx else scopeEndLineIdx
+
+            if (leafBracketIndex != null) {
+                val ranges = findDashItemRanges(lines, kl.lineIdx, nextSiblingLineIdx)
+                if (leafBracketIndex >= ranges.size) return null
+                val (itemStart, itemEnd) = ranges[leafBracketIndex]
+                val itemKeys = parseKeysInDashItem(lines, itemStart, itemEnd)
+                return if (itemKeys.isEmpty()) {
+                    extractDashScalar(lines, itemStart)
+                } else {
+                    val first = itemKeys[0]
+                    if (first.key == "_target" && first.rest.isNotEmpty()) {
+                        first.rest.substringAfterLast('.')
+                    } else "{...}"
+                }
+            }
+
+            return when {
+                kl.rest.isNotEmpty() && !kl.rest.startsWith('{') && !kl.rest.startsWith('[') -> {
+                    val stripped = stripYamlQuotes(kl.rest)
+                    if (stripped.length > 50) stripped.take(47) + "..." else stripped
+                }
+                kl.rest.startsWith('{') -> "{...}"
+                kl.rest.startsWith('[') -> {
+                    if (kl.rest.length <= 40) kl.rest
+                    else "[${countInlineElements(kl.rest)} items]"
+                }
+                kl.rest.isEmpty() -> {
+                    if (isSequenceContent(lines, kl.lineIdx, nextSiblingLineIdx)) {
+                        buildSequencePreview(lines, kl.lineIdx, nextSiblingLineIdx)
+                    } else {
+                        val hasChildren = ((targetPos + 1) until nextSibling).any {
+                            activeKeys[it].indent > targetIndent
+                        }
+                        if (hasChildren) {
+                            val childIndent = ((targetPos + 1) until nextSibling)
+                                .minOfOrNull { activeKeys[it].indent }
+                            val targetChild = if (childIndent != null) {
+                                ((targetPos + 1) until nextSibling).firstOrNull {
+                                    activeKeys[it].indent == childIndent && activeKeys[it].key == "_target"
+                                }
+                            } else null
+                            if (targetChild != null) {
+                                val tv = stripYamlQuotes(activeKeys[targetChild].rest)
+                                tv.substringAfterLast('.').ifEmpty { "{...}" }
+                            } else "{...}"
+                        } else null
+                    }
+                }
+                else -> null
+            }
+        }
+
         private val DOT_INSERT_HANDLER = InsertHandler<LookupElement> { ctx, _ ->
             val doc = ctx.document
             val tail = ctx.editor.caretModel.offset

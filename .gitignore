@@ -3,3 +3,6 @@
 .intellijPlatform
 .qodana
 build
+/.claude/
+/.kotlin/
+/.idea/
