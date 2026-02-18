@@ -65,6 +65,14 @@
 
         <editorNotificationProvider
                 implementation="com.github.ttarasiewicz.srforgeassistant.SrForgeEditorNotificationProvider"/>
+
+        <toolWindow id="Pipeline Probe"
+                    anchor="bottom"
+                    factoryClass="com.github.ttarasiewicz.srforgeassistant.probe.ProbeToolWindowFactory"
+                    icon="/icons/probe.svg"/>
+
+        <notificationGroup id="SR-Forge Assistant"
+                           displayType="BALLOON"/>
     </extensions>
 
     <actions>
@@ -76,5 +84,11 @@
             <add-to-group group-id="FoldingGroup" anchor="last"/>
             <add-to-group group-id="EditorPopupMenu" anchor="last"/>
         </action>
+
+        <action id="SrForgeAssistant.PipelineProbe"
+                class="com.github.ttarasiewicz.srforgeassistant.probe.PipelineProbeAction"
+                text="Run Pipeline Probe"
+                icon="/icons/probe.svg"
+                description="Probe dataset pipeline and visualize data flow"/>
     </actions>
 </idea-plugin>

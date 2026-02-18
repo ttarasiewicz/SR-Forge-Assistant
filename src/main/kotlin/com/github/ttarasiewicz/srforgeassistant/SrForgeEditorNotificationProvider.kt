@@ -41,8 +41,15 @@ class SrForgeEditorNotificationProvider : EditorNotificationProvider {
                 .getAction("SrForgeAssistant.ToggleInterpolationFolds")
                 ?: return@Function null
 
+            val probeAction = ActionManager.getInstance()
+                .getAction("SrForgeAssistant.PipelineProbe")
+
             val group = DefaultActionGroup().apply {
                 add(toggleAction)
+                if (probeAction != null) {
+                    addSeparator()
+                    add(probeAction)
+                }
             }
 
             val toolbar = ActionManager.getInstance().createActionToolbar(
