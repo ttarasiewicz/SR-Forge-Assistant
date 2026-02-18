@@ -14,6 +14,11 @@ class YamlTargetDocumentationProvider : DocumentationTargetProvider {
         if (fqn.isEmpty()) return emptyList()
 
         val cls = TargetUtils.resolveTargetClass(fqn, file.project)
-        return if (cls != null) listOf(PyClassDocTarget(cls)) else listOf(NotFoundDocTarget(fqn))
+        if (cls != null) return listOf(PyClassDocTarget(cls))
+
+        val func = TargetUtils.resolveTargetFunction(fqn, file.project)
+        if (func != null) return listOf(PyFunctionDocTarget(func))
+
+        return listOf(NotFoundDocTarget(fqn))
     }
 }

@@ -15,23 +15,28 @@ class PyClassDocLinkHandler : DocumentationLinkHandler {
         val payload = url.removePrefix(DocumentationManagerProtocol.PSI_ELEMENT_PROTOCOL)
 
         val project = (target as? PyClassDocTarget)?.element?.project
+            ?: (target as? PyFunctionDocTarget)?.element?.project
             ?: ProjectManager.getInstance().openProjects.firstOrNull()
             ?: return null
 
         when {
             payload.startsWith("py:") -> {
                 val fqn = payload.removePrefix("py:").trim().ifEmpty { return null }
-                val cls = TargetUtils.resolveTargetClass(fqn, project) ?: return null
-                return LinkResolveResult.resolvedTarget(PyClassDocTarget(cls))
+                val cls = TargetUtils.resolveTargetClass(fqn, project)
+                if (cls != null) return LinkResolveResult.resolvedTarget(PyClassDocTarget(cls))
+                val func = TargetUtils.resolveTargetFunction(fqn, project) ?: return null
+                return LinkResolveResult.resolvedTarget(PyFunctionDocTarget(func))
             }
             payload.startsWith("py-src:") -> {
                 val fqn = payload.removePrefix("py-src:").trim().ifEmpty { return null }
-                val cls = TargetUtils.resolveTargetClass(fqn, project) ?: return null
-                val vFile = cls.containingFile?.virtualFile ?: return null
-                val offset = cls.textOffset
+                val resolved = TargetUtils.resolveTargetClass(fqn, project)
+                    ?: TargetUtils.resolveTargetFunction(fqn, project)
+                    ?: return null
+                val vFile = resolved.containingFile?.virtualFile ?: return null
+                val offset = resolved.textOffset
                 return LinkResolveResult.asyncResult {
                     ApplicationManager.getApplication().invokeLater {
-                        OpenFileDescriptor(cls.project, vFile, offset).navigate(true)
+                        OpenFileDescriptor(resolved.project, vFile, offset).navigate(true)
                     }
                     null
                 }

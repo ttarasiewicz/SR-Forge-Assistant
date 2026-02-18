@@ -18,6 +18,7 @@ import com.intellij.psi.search.ProjectScope
 import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.util.ProcessingContext
 import com.jetbrains.python.psi.stubs.PyClassNameIndex
+import com.jetbrains.python.psi.stubs.PyFunctionNameIndex
 import org.jetbrains.yaml.psi.YAMLScalar
 
 class YamlTargetCompletionProvider : CompletionProvider<CompletionParameters>() {
@@ -55,6 +56,12 @@ class YamlTargetCompletionProvider : CompletionProvider<CompletionParameters>() 
 
             session.processKeys(filteredKeys, scopes.project, { true }, buildFullEdges = true)
             session.processKeys(filteredKeys, scopes.srforgeLib, { q -> q.startsWith("srforge.") }, buildFullEdges = true)
+
+            val allFuncKeys = PyFunctionNameIndex.allKeys(project)
+            val filteredFuncKeys = session.filterKeys(allFuncKeys, prefix)
+
+            session.processFunctionKeys(filteredFuncKeys, scopes.project, { true }, buildFullEdges = true)
+            session.processFunctionKeys(filteredFuncKeys, scopes.srforgeLib, { q -> q.startsWith("srforge.") }, buildFullEdges = true)
 
             when {
                 !isDotted && needle.isEmpty() ->
@@ -129,6 +136,7 @@ class YamlTargetCompletionProvider : CompletionProvider<CompletionParameters>() 
     ) {
         val batch = ArrayList<LookupElement>(256)
         private val seenClasses = HashSet<String>()
+        private val seenFunctions = HashSet<String>()
         private val seenPackages = HashSet<String>()
         private val packageEdges = HashMap<String, MutableSet<String>>()
         private val termLower = term.lowercase()
@@ -232,6 +240,52 @@ class YamlTargetCompletionProvider : CompletionProvider<CompletionParameters>() 
                 .withInsertHandler(classInsertHandler)
             el.putUserData(PRIORITY_KEY, matchPriority(qualified, simple))
             el.putUserData(TYPE_KEY, 1)
+            batch.add(el)
+        }
+
+        fun processFunctionKeys(
+            keys: Collection<String>,
+            scope: GlobalSearchScope,
+            acceptQualified: (String) -> Boolean,
+            buildFullEdges: Boolean
+        ) {
+            for (key in keys) {
+                ProgressManager.checkCanceled()
+                val functions = PyFunctionNameIndex.find(key, project, scope)
+                if (functions.isEmpty()) continue
+                for (func in functions) {
+                    if (func.containingClass != null) continue
+                    val qualified = func.qualifiedName ?: continue
+                    if (!acceptQualified(qualified)) continue
+                    if (isDotted && needle.isNotEmpty() && !qualified.lowercase().startsWith(needle.lowercase())) continue
+
+                    val parts = qualified.split('.')
+                    if (parts.size >= 2) addPackageEdge("", parts[0])
+
+                    if (buildFullEdges) {
+                        val lastIdx = parts.size - 1
+                        for (i in 0 until lastIdx) {
+                            val base = if (i == 0) "" else parts.subList(0, i).joinToString(".")
+                            addPackageEdge(base, parts[i])
+                        }
+                        addFunctionSuggestion(qualified)
+                    }
+                }
+            }
+        }
+
+        private fun addFunctionSuggestion(qualified: String) {
+            if (!seenFunctions.add(qualified)) return
+            val simple = qualified.substringAfterLast('.')
+            val tail = qualified.substringBeforeLast('.', "")
+            val el = LookupElementBuilder.create(qualified)
+                .withPresentableText(simple)
+                .withTypeText(tail, true)
+                .withCaseSensitivity(false)
+                .withIcon(AllIcons.Nodes.Function)
+                .withInsertHandler(classInsertHandler)
+            el.putUserData(PRIORITY_KEY, matchPriority(qualified, simple))
+            el.putUserData(TYPE_KEY, 2)
             batch.add(el)
         }
 

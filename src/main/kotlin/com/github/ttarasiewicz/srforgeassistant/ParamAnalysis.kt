@@ -116,6 +116,22 @@ fun nextClassWithInit(cls: PyClass?, ctx: TypeEvalContext): PyClass? {
     return null
 }
 
+/** Build a flat param list for a standalone [PyFunction] (no MRO / inheritance). */
+fun buildFunctionParams(func: PyFunction): LinkedHashMap<String, ParamInfo>? {
+    val params = func.parameterList.parameters
+        .filterIsInstance<PyNamedParameter>()
+        .filter { !it.isSelf && !it.isPositionalContainer && !it.isKeywordContainer }
+
+    if (params.isEmpty()) return null
+
+    val map = LinkedHashMap<String, ParamInfo>()
+    for (p in params) {
+        val info = p.toParamInfo()
+        if (info.name.isNotBlank()) map[info.name] = info
+    }
+    return if (map.isEmpty()) null else map
+}
+
 /** Convert a [PyNamedParameter] to [ParamInfo] using annotation/default from code text. */
 fun PyNamedParameter.toParamInfo(): ParamInfo {
     val name = this.name ?: "<param>"

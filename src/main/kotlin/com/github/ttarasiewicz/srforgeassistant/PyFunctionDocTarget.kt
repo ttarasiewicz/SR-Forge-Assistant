@@ -8,52 +8,52 @@ import com.intellij.platform.backend.documentation.DocumentationResult
 import com.intellij.platform.backend.documentation.DocumentationTarget
 import com.intellij.platform.backend.presentation.TargetPresentation
 import com.intellij.util.ui.EmptyIcon
-import com.jetbrains.python.psi.PyClass
+import com.jetbrains.python.psi.PyFunction
 import javax.swing.Icon
 
-/** Documentation target for a resolved PyClass. */
-class PyClassDocTarget(pyClass: PyClass) : DocumentationTarget {
-    private val project = pyClass.project
-    private val ptr = com.intellij.psi.SmartPointerManager.getInstance(project).createSmartPsiElementPointer(pyClass)
-    val element: PyClass? get() = ptr.element
+/** Documentation target for a resolved top-level PyFunction. */
+class PyFunctionDocTarget(pyFunction: PyFunction) : DocumentationTarget {
+    private val project = pyFunction.project
+    private val ptr = com.intellij.psi.SmartPointerManager.getInstance(project).createSmartPsiElementPointer(pyFunction)
+    val element: PyFunction? get() = ptr.element
 
     override fun createPointer(): Pointer<out DocumentationTarget> =
-        Pointer { ptr.element?.let { PyClassDocTarget(it) } }
+        Pointer { ptr.element?.let { PyFunctionDocTarget(it) } }
 
     override fun computePresentation(): TargetPresentation {
         val element = ptr.element
-        val qn = element?.qualifiedName ?: element?.name ?: "<class>"
+        val qn = element?.qualifiedName ?: element?.name ?: "<function>"
         val icon: Icon = element?.getIcon(0) ?: EmptyIcon.ICON_16
         return TargetPresentation.builder(qn).icon(icon).presentation()
     }
 
     override fun computeDocumentation(): DocumentationResult? {
-        val cls = ptr.element ?: return null
+        val func = ptr.element ?: return null
 
-        val sections = buildPropagatedParams(cls)
-        val paramsHtml = sections?.let { DocHtmlRenderer.renderParamSections(it) }
+        val params = buildFunctionParams(func)
+        val paramsHtml = params?.let { DocHtmlRenderer.renderFunctionParams(it) }
 
         val providerHtml = try {
-            val provider: DocumentationProvider = LanguageDocumentation.INSTANCE.forLanguage(cls.language)
-            provider.generateDoc(cls, cls) ?: provider.generateHoverDoc(cls, cls)
+            val provider: DocumentationProvider = LanguageDocumentation.INSTANCE.forLanguage(func.language)
+            provider.generateDoc(func, func) ?: provider.generateHoverDoc(func, func)
         } catch (_: Throwable) {
             null
         }
 
-        val selfLink = DocHtmlRenderer.buildSelfSourceLink(cls)
+        val selfLink = DocHtmlRenderer.buildSelfSourceLinkForFunction(func)
         if (!providerHtml.isNullOrBlank()) {
             return DocumentationResult.documentation(selfLink + (paramsHtml ?: "") + providerHtml)
         }
 
         // Fallback: minimal header + our params + docstring
-        val header = DocHtmlRenderer.buildClassHeader(cls)
-        val doc = cls.docStringExpression?.stringValue
+        val header = DocHtmlRenderer.buildFunctionHeader(func)
+        val doc = func.docStringExpression?.stringValue
             ?.takeIf { it.isNotBlank() } ?: "<i>No docstring found.</i>"
-        val modulePath = cls.qualifiedName?.substringBeforeLast('.', missingDelimiterValue = "")
+        val modulePath = func.qualifiedName?.substringBeforeLast('.', missingDelimiterValue = "")
 
         val html = buildString {
             append(DocumentationMarkup.DEFINITION_START)
-            val qn = cls.qualifiedName
+            val qn = func.qualifiedName
             if (qn != null) {
                 append("<code><a href=\"py-src:").append(DocHtmlRenderer.escape(qn)).append("\">")
                 append(DocHtmlRenderer.escape(header)).append("</a></code>")
@@ -79,32 +79,7 @@ class PyClassDocTarget(pyClass: PyClass) : DocumentationTarget {
 
     override fun computeDocumentationHint(): String? {
         val element = ptr.element ?: return null
-        val qn = element.qualifiedName ?: element.name ?: "class"
+        val qn = element.qualifiedName ?: element.name ?: "function"
         return "<b>${DocHtmlRenderer.escape(qn)}</b>"
-    }
-}
-
-/** Shown when `_target` points to a non-existing Python class. */
-class NotFoundDocTarget(private val fqn: String) : DocumentationTarget {
-    override fun createPointer(): Pointer<out DocumentationTarget> = Pointer { NotFoundDocTarget(fqn) }
-    override fun computePresentation(): TargetPresentation =
-        TargetPresentation.builder(fqn).presentation()
-
-    override fun computeDocumentation(): DocumentationResult {
-        val safe = DocHtmlRenderer.escape(fqn)
-        return DocumentationResult.documentation(
-            """
-            <html><body>
-              <h3>$safe</h3>
-              <p><i>No Python class or function found for this fully-qualified name.</i></p>
-              <p>Check your environment (project + libraries) or the spelling.</p>
-            </body></html>
-            """.trimIndent()
-        )
-    }
-
-    override fun computeDocumentationHint(): String {
-        val safe = DocHtmlRenderer.escape(fqn)
-        return "<b>$safe</b> — not found"
     }
 }

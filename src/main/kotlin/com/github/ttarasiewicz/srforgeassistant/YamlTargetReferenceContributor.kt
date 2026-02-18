@@ -26,6 +26,7 @@ private class TargetClassReference(element: YAMLScalar)
         val fqn = element.textValue.trim()
         if (fqn.isEmpty()) return null
         return TargetUtils.resolveTargetClass(fqn, element.project)
+            ?: TargetUtils.resolveTargetFunction(fqn, element.project)
     }
 
     override fun getVariants(): Array<Any> = emptyArray()

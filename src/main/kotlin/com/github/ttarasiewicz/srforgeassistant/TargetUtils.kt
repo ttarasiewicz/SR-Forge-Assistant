@@ -5,7 +5,9 @@ import com.intellij.psi.PsiElement
 import com.intellij.psi.search.GlobalSearchScope
 import com.intellij.psi.util.PsiTreeUtil
 import com.jetbrains.python.psi.PyClass
+import com.jetbrains.python.psi.PyFunction
 import com.jetbrains.python.psi.stubs.PyClassNameIndex
+import com.jetbrains.python.psi.stubs.PyFunctionNameIndex
 import org.jetbrains.yaml.psi.YAMLKeyValue
 import org.jetbrains.yaml.psi.YAMLScalar
 
@@ -36,6 +38,21 @@ object TargetUtils {
 
         // 2. Re-export: fqn omits the module when module name == class name
         //    e.g., "pkg.MagNAt" → "pkg.MagNAt.MagNAt"
+        candidates.firstOrNull { it.qualifiedName == "$fqn.$simple" }?.let { return it }
+
+        return null
+    }
+
+    /** Resolves a fully-qualified name to a top-level [PyFunction].
+     *  Same strategy as [resolveTargetClass]: exact match first, then re-export fallback.
+     *  Only returns functions that are **not** methods (containingClass == null). */
+    fun resolveTargetFunction(fqn: String, project: Project): PyFunction? {
+        val scope = GlobalSearchScope.allScope(project)
+        val simple = fqn.substringAfterLast('.')
+        val candidates = PyFunctionNameIndex.find(simple, project, scope)
+            .filter { it.containingClass == null }
+
+        candidates.firstOrNull { it.qualifiedName == fqn }?.let { return it }
         candidates.firstOrNull { it.qualifiedName == "$fqn.$simple" }?.let { return it }
 
         return null
