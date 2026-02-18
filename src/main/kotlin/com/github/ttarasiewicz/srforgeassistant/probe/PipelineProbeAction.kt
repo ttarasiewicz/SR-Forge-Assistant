@@ -5,12 +5,15 @@ import com.intellij.notification.NotificationType
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.CommonDataKeys
+import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.Task
 import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.psi.PsiManager
 import org.jetbrains.yaml.psi.YAMLFile
+import org.jetbrains.yaml.psi.YAMLMapping
+import org.jetbrains.yaml.psi.YAMLScalar
 
 class PipelineProbeAction : AnAction(
     "Run Pipeline Probe",
@@ -46,6 +49,11 @@ class PipelineProbeAction : AnAction(
         if (selectedNode == null) {
             showNotification(e, "Selected dataset not found.")
             return
+        }
+
+        // Write overrides back to the YAML file if requested
+        if (dialog.shouldOverwriteYaml && pathOverrides.isNotEmpty()) {
+            applyPathOverridesToYaml(psiFile, selectedNode, pathOverrides)
         }
 
         // Validate Python SDK
@@ -100,6 +108,61 @@ class PipelineProbeAction : AnAction(
         // Keep the action visible and validate in actionPerformed instead.
         val file = e.getData(CommonDataKeys.PSI_FILE)
         e.presentation.isEnabled = file == null || file is YAMLFile
+    }
+
+    /**
+     * Replace `root` param values in the YAML PSI tree for the selected dataset
+     * and any wrapped inner datasets.
+     */
+    private fun applyPathOverridesToYaml(
+        yamlFile: YAMLFile,
+        node: DatasetNode,
+        overrides: Map<String, String>
+    ) {
+        val project = yamlFile.project
+        val scalarsToReplace = mutableListOf<Pair<YAMLScalar, String>>()
+        collectRootScalars(yamlFile, node, overrides, scalarsToReplace)
+
+        if (scalarsToReplace.isEmpty()) return
+
+        WriteCommandAction.runWriteCommandAction(project, "Update Data Paths", null, Runnable {
+            for ((scalar, newValue) in scalarsToReplace) {
+                val generator = org.jetbrains.yaml.YAMLElementGenerator.getInstance(project)
+                val newScalar = generator.createYamlKeyValue("_k", newValue).value ?: continue
+                scalar.replace(newScalar)
+            }
+        }, yamlFile)
+    }
+
+    private fun collectRootScalars(
+        yamlFile: YAMLFile,
+        node: DatasetNode,
+        overrides: Map<String, String>,
+        result: MutableList<Pair<YAMLScalar, String>>
+    ) {
+        // Find the YAML mapping at this node's offset
+        val element = yamlFile.findElementAt(node.yamlOffset) ?: return
+        val mapping = element.parent as? YAMLMapping
+            ?: element.parent?.parent as? YAMLMapping ?: return
+
+        // Look for params.root
+        val paramsKv = mapping.getKeyValueByKey("params")
+        val paramsMapping = paramsKv?.value as? YAMLMapping
+        val rootKv = paramsMapping?.getKeyValueByKey("root")
+        val rootScalar = rootKv?.value as? YAMLScalar
+
+        if (rootScalar != null) {
+            val originalValue = rootScalar.textValue
+            val newValue = overrides[originalValue]
+            if (newValue != null) {
+                result.add(rootScalar to newValue)
+            }
+        }
+
+        // Recurse into wrapped dataset
+        if (node.wrappedDataset != null) {
+            collectRootScalars(yamlFile, node.wrappedDataset, overrides, result)
+        }
     }
 
     private fun showNotification(e: AnActionEvent, message: String) {
