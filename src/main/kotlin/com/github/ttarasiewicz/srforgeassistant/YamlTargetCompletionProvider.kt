@@ -77,17 +77,20 @@ class YamlTargetCompletionProvider : CompletionProvider<CompletionParameters>() 
                     // User is typing a name after the dot — filter keys and resolve
                     val filteredClassKeys = PyClassNameIndex.allKeys(project)
                         .filter { it.contains(term, ignoreCase = true) }
-                    session.processKeys(filteredClassKeys, scopes.project, { true }, buildFullEdges = true)
+                    session.processKeys(filteredClassKeys, scopes.project, { true }, buildFullEdges = true, sourceBoost = LOCAL_BOOST)
+                    session.processKeys(filteredClassKeys, scopes.srforgeLib, { q -> q.startsWith("srforge.") }, buildFullEdges = true, sourceBoost = LOCAL_BOOST)
                     session.processKeys(filteredClassKeys, scopes.libraries, { true }, buildFullEdges = true)
 
                     val filteredFuncKeys = PyFunctionNameIndex.allKeys(project)
                         .filter { it.contains(term, ignoreCase = true) }
-                    session.processFunctionKeys(filteredFuncKeys, scopes.project, { true }, buildFullEdges = true)
+                    session.processFunctionKeys(filteredFuncKeys, scopes.project, { true }, buildFullEdges = true, sourceBoost = LOCAL_BOOST)
+                    session.processFunctionKeys(filteredFuncKeys, scopes.srforgeLib, { q -> q.startsWith("srforge.") }, buildFullEdges = true, sourceBoost = LOCAL_BOOST)
                     session.processFunctionKeys(filteredFuncKeys, scopes.libraries, { true }, buildFullEdges = true)
                 } else {
                     // Term is empty (e.g. "srforge.dataset.") — scan .py files in the
                     // target package/module for classes/functions. Fast and targeted.
-                    session.discoverDirectContent(scopes.project)
+                    session.discoverDirectContent(scopes.project, LOCAL_BOOST)
+                    session.discoverDirectContent(scopes.srforgeLib, LOCAL_BOOST)
                     session.discoverDirectContent(scopes.libraries)
                 }
 
@@ -97,14 +100,14 @@ class YamlTargetCompletionProvider : CompletionProvider<CompletionParameters>() 
                 val allKeys = PyClassNameIndex.allKeys(project)
                 val filteredKeys = session.filterKeys(allKeys, prefix)
 
-                session.processKeys(filteredKeys, scopes.project, { true }, buildFullEdges = true)
-                session.processKeys(filteredKeys, scopes.srforgeLib, { q -> q.startsWith("srforge.") }, buildFullEdges = true)
+                session.processKeys(filteredKeys, scopes.project, { true }, buildFullEdges = true, sourceBoost = LOCAL_BOOST)
+                session.processKeys(filteredKeys, scopes.srforgeLib, { q -> q.startsWith("srforge.") }, buildFullEdges = true, sourceBoost = LOCAL_BOOST)
 
                 val allFuncKeys = PyFunctionNameIndex.allKeys(project)
                 val filteredFuncKeys = session.filterKeys(allFuncKeys, prefix)
 
-                session.processFunctionKeys(filteredFuncKeys, scopes.project, { true }, buildFullEdges = true)
-                session.processFunctionKeys(filteredFuncKeys, scopes.srforgeLib, { q -> q.startsWith("srforge.") }, buildFullEdges = true)
+                session.processFunctionKeys(filteredFuncKeys, scopes.project, { true }, buildFullEdges = true, sourceBoost = LOCAL_BOOST)
+                session.processFunctionKeys(filteredFuncKeys, scopes.srforgeLib, { q -> q.startsWith("srforge.") }, buildFullEdges = true, sourceBoost = LOCAL_BOOST)
 
                 if (needle.isNotEmpty()) {
                     // Discover library packages for root package suggestions + re-export detection
@@ -259,7 +262,7 @@ class YamlTargetCompletionProvider : CompletionProvider<CompletionParameters>() 
 
         /** Scan .py files for top-level classes/functions in the target indicated by [needle].
          *  Handles both package directories and module files. */
-        fun discoverDirectContent(scope: GlobalSearchScope) {
+        fun discoverDirectContent(scope: GlobalSearchScope, sourceBoost: Double = 0.0) {
             val pkgFqn = needle.trimEnd('.')
             if (pkgFqn.isEmpty()) return
 
@@ -284,27 +287,27 @@ class YamlTargetCompletionProvider : CompletionProvider<CompletionParameters>() 
                         for (child in dir.children) {
                             if (child.isDirectory || !child.name.endsWith(".py")) continue
                             ProgressManager.checkCanceled()
-                            scanPsiFileForContent(psiManager.findFile(child) ?: continue)
+                            scanPsiFileForContent(psiManager.findFile(child) ?: continue, sourceBoost)
                         }
                     }
                     // Target might be a module file inside this parent package
                     parentPath -> {
                         val moduleFile = dir.findChild("$lastSegment.py") ?: continue
-                        scanPsiFileForContent(psiManager.findFile(moduleFile) ?: continue)
+                        scanPsiFileForContent(psiManager.findFile(moduleFile) ?: continue, sourceBoost)
                     }
                 }
             }
         }
 
-        private fun scanPsiFileForContent(psiFile: com.intellij.psi.PsiFile) {
+        private fun scanPsiFileForContent(psiFile: com.intellij.psi.PsiFile, sourceBoost: Double = 0.0) {
             for (cls in PsiTreeUtil.getChildrenOfType(psiFile, PyClass::class.java).orEmpty()) {
                 val qualified = cls.qualifiedName ?: continue
-                addClassSuggestion(qualified)
+                addClassSuggestion(qualified, sourceBoost)
             }
             for (func in PsiTreeUtil.getChildrenOfType(psiFile, PyFunction::class.java).orEmpty()) {
                 if (func.containingClass != null) continue
                 val qualified = func.qualifiedName ?: continue
-                addFunctionSuggestion(qualified)
+                addFunctionSuggestion(qualified, sourceBoost)
             }
         }
 
@@ -323,7 +326,8 @@ class YamlTargetCompletionProvider : CompletionProvider<CompletionParameters>() 
             keys: Collection<String>,
             scope: GlobalSearchScope,
             acceptQualified: (String) -> Boolean,
-            buildFullEdges: Boolean
+            buildFullEdges: Boolean,
+            sourceBoost: Double = 0.0
         ) {
             for (key in keys) {
                 ProgressManager.checkCanceled()
@@ -343,7 +347,7 @@ class YamlTargetCompletionProvider : CompletionProvider<CompletionParameters>() 
                             val base = if (i == 0) "" else parts.subList(0, i).joinToString(".")
                             addPackageEdge(base, parts[i])
                         }
-                        addClassSuggestion(qualified)
+                        addClassSuggestion(qualified, sourceBoost)
                     }
                 }
             }
@@ -431,7 +435,7 @@ class YamlTargetCompletionProvider : CompletionProvider<CompletionParameters>() 
             return if (simpleName in reExported) shortened else canonicalQn
         }
 
-        private fun addClassSuggestion(qualified: String) {
+        private fun addClassSuggestion(qualified: String, sourceBoost: Double = 0.0) {
             if (isJunkPath(qualified)) return
             val preferred = preferredQualifiedName(qualified)
             if (!seenClasses.add(preferred)) return
@@ -443,7 +447,7 @@ class YamlTargetCompletionProvider : CompletionProvider<CompletionParameters>() 
                 .withCaseSensitivity(false)
                 .withIcon(AllIcons.Nodes.Class)
                 .withInsertHandler(classInsertHandler)
-            el.putUserData(PRIORITY_KEY, matchPriority(preferred, simple))
+            el.putUserData(PRIORITY_KEY, matchPriority(preferred, simple) + sourceBoost)
             el.putUserData(TYPE_KEY, 1)
             batch.add(el)
         }
@@ -452,7 +456,8 @@ class YamlTargetCompletionProvider : CompletionProvider<CompletionParameters>() 
             keys: Collection<String>,
             scope: GlobalSearchScope,
             acceptQualified: (String) -> Boolean,
-            buildFullEdges: Boolean
+            buildFullEdges: Boolean,
+            sourceBoost: Double = 0.0
         ) {
             for (key in keys) {
                 ProgressManager.checkCanceled()
@@ -473,13 +478,13 @@ class YamlTargetCompletionProvider : CompletionProvider<CompletionParameters>() 
                             val base = if (i == 0) "" else parts.subList(0, i).joinToString(".")
                             addPackageEdge(base, parts[i])
                         }
-                        addFunctionSuggestion(qualified)
+                        addFunctionSuggestion(qualified, sourceBoost)
                     }
                 }
             }
         }
 
-        private fun addFunctionSuggestion(qualified: String) {
+        private fun addFunctionSuggestion(qualified: String, sourceBoost: Double = 0.0) {
             if (isJunkPath(qualified)) return
             val preferred = preferredQualifiedName(qualified)
             if (!seenFunctions.add(preferred)) return
@@ -491,7 +496,7 @@ class YamlTargetCompletionProvider : CompletionProvider<CompletionParameters>() 
                 .withCaseSensitivity(false)
                 .withIcon(AllIcons.Nodes.Function)
                 .withInsertHandler(classInsertHandler)
-            el.putUserData(PRIORITY_KEY, matchPriority(preferred, simple))
+            el.putUserData(PRIORITY_KEY, matchPriority(preferred, simple) + sourceBoost)
             el.putUserData(TYPE_KEY, 2)
             batch.add(el)
         }
@@ -560,6 +565,9 @@ class YamlTargetCompletionProvider : CompletionProvider<CompletionParameters>() 
     companion object {
         private val PRIORITY_KEY: Key<Double> = Key.create("srforge.yamlTargetPriority")
         private val TYPE_KEY: Key<Int> = Key.create("srforge.yamlTargetType")
+
+        /** Priority boost for project-local and srforge items over third-party libraries. */
+        private const val LOCAL_BOOST = 1000.0
 
         /** Root package names that should never appear in _target: suggestions. */
         private val JUNK_ROOTS = setOf(

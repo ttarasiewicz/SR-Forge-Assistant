@@ -4,8 +4,6 @@ import com.intellij.codeInspection.*
 import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.Project
 import com.intellij.psi.PsiElementVisitor
-import com.intellij.psi.util.PsiTreeUtil
-import org.jetbrains.yaml.YAMLElementGenerator
 import org.jetbrains.yaml.psi.YAMLKeyValue
 import org.jetbrains.yaml.psi.YAMLMapping
 import org.jetbrains.yaml.psi.YAMLScalar
@@ -50,7 +48,7 @@ class MissingRequiredParamsInspection : LocalInspectionTool() {
                     keyValue,
                     message,
                     ProblemHighlightType.WARNING,
-                    AddMissingParamsQuickFix(missing, allParams)
+                    AddMissingParamsQuickFix(missing)
                 )
             }
         }
@@ -58,8 +56,7 @@ class MissingRequiredParamsInspection : LocalInspectionTool() {
 
     /** Quick fix that inserts the missing required parameters into `params:`. */
     private class AddMissingParamsQuickFix(
-        private val missingNames: List<String>,
-        private val allParams: LinkedHashMap<String, ParamInfo>
+        private val missingNames: List<String>
     ) : LocalQuickFix {
 
         override fun getFamilyName(): String = "Add missing required parameters"
@@ -68,43 +65,7 @@ class MissingRequiredParamsInspection : LocalInspectionTool() {
         override fun applyFix(project: Project, descriptor: ProblemDescriptor) {
             val targetKv = descriptor.psiElement as? YAMLKeyValue ?: return
             val mapping = targetKv.parent as? YAMLMapping ?: return
-
-            val generator = YAMLElementGenerator.getInstance(project)
-            val paramsKv = mapping.keyValues.firstOrNull { it.keyText == "params" }
-            val paramsMapping = paramsKv?.value as? YAMLMapping
-
-            val stubs = missingNames.mapNotNull { name ->
-                allParams[name]?.let { info -> name to info }
-            }
-
-            if (paramsMapping != null) {
-                for ((name, info) in stubs) {
-                    val value = stubValue(info)
-                    val tempFile = generator.createDummyYamlWithText("$name: $value")
-                    val kv = PsiTreeUtil.findChildOfType(tempFile, YAMLKeyValue::class.java) ?: continue
-                    paramsMapping.putKeyValue(kv)
-                }
-            } else {
-                val yamlText = buildString {
-                    append("params:\n")
-                    for ((name, info) in stubs) {
-                        append("  ").append(name).append(": ").append(stubValue(info)).append("\n")
-                    }
-                }.trimEnd()
-
-                val tempFile = generator.createDummyYamlWithText(yamlText)
-                val newParamsKv = PsiTreeUtil.findChildOfType(tempFile, YAMLKeyValue::class.java) ?: return
-                mapping.putKeyValue(newParamsKv)
-            }
-        }
-
-        private fun stubValue(info: ParamInfo): String = when {
-            info.defaultText != null -> info.defaultText
-            info.typeText == "bool" || info.typeText == "Bool" -> "false"
-            info.typeText == "int" || info.typeText == "Int" -> "0"
-            info.typeText == "float" || info.typeText == "Float" -> "0.0"
-            info.typeText == "str" || info.typeText == "String" -> "\"\""
-            else -> "???"
+            ParamUtils.generateMissingStubs(mapping)
         }
     }
 }

@@ -26,6 +26,10 @@
         <typedHandler
                 implementation="com.github.ttarasiewicz.srforgeassistant.TargetDotTypedHandler"/>
 
+        <codeInsight.lineMarkerProvider
+                language="yaml"
+                implementationClass="com.github.ttarasiewicz.srforgeassistant.TargetParamStubsLineMarkerProvider"/>
+
         <intentionAction>
             <language>yaml</language>
             <className>com.github.ttarasiewicz.srforgeassistant.GenerateParamStubsIntention</className>

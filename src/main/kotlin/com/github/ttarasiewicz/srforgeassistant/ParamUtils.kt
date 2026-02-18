@@ -1,8 +1,10 @@
 package com.github.ttarasiewicz.srforgeassistant
 
+import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.psi.PsiElement
 import com.intellij.psi.util.PsiTreeUtil
 import com.jetbrains.python.psi.PyClass
+import org.jetbrains.yaml.YAMLElementGenerator
 import org.jetbrains.yaml.psi.YAMLKeyValue
 import org.jetbrains.yaml.psi.YAMLMapping
 import org.jetbrains.yaml.psi.YAMLScalar
@@ -88,6 +90,70 @@ object ParamUtils {
     /** Returns set of param names already written in the [paramsMapping]. */
     fun existingParamNames(paramsMapping: YAMLMapping): Set<String> =
         paramsMapping.keyValues.mapNotNull { it.keyText.takeIf { k -> k.isNotBlank() } }.toSet()
+
+    /** Returns a placeholder stub value for a given [ParamInfo]. */
+    fun stubValue(info: ParamInfo): String = when {
+        info.defaultText != null -> info.defaultText
+        info.typeText == "bool" || info.typeText == "Bool" -> "false"
+        info.typeText == "int" || info.typeText == "Int" -> "0"
+        info.typeText == "float" || info.typeText == "Float" -> "0.0"
+        info.typeText == "str" || info.typeText == "String" -> "\"\""
+        else -> "???"
+    }
+
+    /**
+     * Generates missing parameter stubs inside the given [targetMapping].
+     * If a `params:` key already exists, missing entries are added to it.
+     * If no `params:` key exists, one is created as a sibling of `_target:`.
+     *
+     * Must be called inside a write action.
+     */
+    fun generateMissingStubs(targetMapping: YAMLMapping) {
+        val allParams = resolveParamsFromTargetMapping(targetMapping) ?: return
+        val paramsKv = targetMapping.keyValues.firstOrNull { it.keyText == "params" }
+        val paramsMapping = paramsKv?.value as? YAMLMapping
+        val existing = paramsMapping?.let { existingParamNames(it) } ?: emptySet()
+
+        val missing = allParams.filter { (name, _) -> name !in existing }
+        if (missing.isEmpty()) return
+
+        val generator = YAMLElementGenerator.getInstance(targetMapping.project)
+        // Sort: required params first, then optional
+        val sorted = missing.entries.sortedBy { if (it.value.defaultText == null) 0 else 1 }
+
+        if (paramsMapping != null) {
+            for ((name, info) in sorted) {
+                val value = stubValue(info)
+                val tempFile = generator.createDummyYamlWithText("$name: $value")
+                val kv = PsiTreeUtil.findChildOfType(tempFile, YAMLKeyValue::class.java) ?: continue
+                paramsMapping.putKeyValue(kv)
+            }
+        } else {
+            val yamlText = buildString {
+                append("params:\n")
+                for ((name, info) in sorted) {
+                    append("  ").append(name).append(": ").append(stubValue(info)).append("\n")
+                }
+            }.trimEnd()
+
+            val tempFile = generator.createDummyYamlWithText(yamlText)
+            val newParamsKv = PsiTreeUtil.findChildOfType(tempFile, YAMLKeyValue::class.java) ?: return
+            targetMapping.putKeyValue(newParamsKv)
+        }
+    }
+
+    /**
+     * Returns the number of missing parameters for a `_target:` mapping,
+     * or null if the target cannot be resolved.
+     */
+    fun countMissingParams(targetMapping: YAMLMapping): Int? {
+        val allParams = resolveParamsFromTargetMapping(targetMapping) ?: return null
+        val paramsKv = targetMapping.keyValues.firstOrNull { it.keyText == "params" }
+        val paramsMapping = paramsKv?.value as? YAMLMapping
+        val existing = paramsMapping?.let { existingParamNames(it) } ?: emptySet()
+        val missing = allParams.keys.count { it !in existing }
+        return if (missing > 0) missing else null
+    }
 
     /** Flatten class param sections into a single ordered map (first occurrence wins). */
     private fun flattenClassParams(cls: PyClass): LinkedHashMap<String, ParamInfo>? {
