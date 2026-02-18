@@ -17,12 +17,7 @@ import org.jetbrains.yaml.psi.YamlPsiElementVisitor
  */
 class MissingRequiredParamsInspection : LocalInspectionTool() {
 
-    override fun getDisplayName(): String = "Missing required parameters in params"
     override fun getGroupDisplayName(): String = "SR-Forge Assistant"
-    override fun getShortName(): String = "SRForgeMissingRequiredParams"
-    override fun isEnabledByDefault(): Boolean = true
-    override fun getDefaultLevel(): com.intellij.codeHighlighting.HighlightDisplayLevel =
-        com.intellij.codeHighlighting.HighlightDisplayLevel.WARNING
 
     override fun buildVisitor(holder: ProblemsHolder, isOnTheFly: Boolean): PsiElementVisitor {
         if (DumbService.isDumb(holder.project)) return PsiElementVisitor.EMPTY_VISITOR

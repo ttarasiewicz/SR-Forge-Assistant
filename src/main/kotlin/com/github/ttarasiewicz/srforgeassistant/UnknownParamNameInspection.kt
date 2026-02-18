@@ -15,12 +15,7 @@ import org.jetbrains.yaml.psi.YamlPsiElementVisitor
  */
 class UnknownParamNameInspection : LocalInspectionTool() {
 
-    override fun getDisplayName(): String = "Unknown parameter name in params"
     override fun getGroupDisplayName(): String = "SR-Forge Assistant"
-    override fun getShortName(): String = "SRForgeUnknownParamName"
-    override fun isEnabledByDefault(): Boolean = true
-    override fun getDefaultLevel(): com.intellij.codeHighlighting.HighlightDisplayLevel =
-        com.intellij.codeHighlighting.HighlightDisplayLevel.WARNING
 
     override fun buildVisitor(holder: ProblemsHolder, isOnTheFly: Boolean): PsiElementVisitor {
         if (DumbService.isDumb(holder.project)) return PsiElementVisitor.EMPTY_VISITOR
