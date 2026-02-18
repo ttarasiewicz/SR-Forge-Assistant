@@ -2,6 +2,7 @@ package com.github.ttarasiewicz.srforgeassistant
 
 import com.intellij.codeInsight.AutoPopupController
 import com.intellij.codeInsight.completion.*
+import com.intellij.codeInsight.completion.PlainPrefixMatcher
 import com.intellij.codeInsight.lookup.LookupElement
 import com.intellij.codeInsight.lookup.LookupElementBuilder
 import com.intellij.codeInsight.lookup.LookupElementWeigher
@@ -10,13 +11,20 @@ import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.roots.ProjectRootManager
 import com.intellij.openapi.util.Key
+import com.intellij.openapi.vfs.VfsUtilCore
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.psi.PsiElement
+import com.intellij.psi.PsiManager
+import com.intellij.psi.search.FilenameIndex
 import com.intellij.psi.search.GlobalSearchScope
 import com.intellij.psi.search.ProjectScope
 import com.intellij.psi.util.PsiTreeUtil
 import com.intellij.util.ProcessingContext
+import com.jetbrains.python.psi.PyClass
+import com.jetbrains.python.psi.PyFromImportStatement
+import com.jetbrains.python.psi.PyFunction
 import com.jetbrains.python.psi.stubs.PyClassNameIndex
 import com.jetbrains.python.psi.stubs.PyFunctionNameIndex
 import org.jetbrains.yaml.psi.YAMLScalar
@@ -34,13 +42,17 @@ class YamlTargetCompletionProvider : CompletionProvider<CompletionParameters>() 
         val scalar = TargetUtils.getTargetScalar(parameters.position) ?: return
         result.stopHere()
 
-        val out = result.withRelevanceSorter(buildSorter())
-
         val raw = scalar.textValue.orEmpty()
         val needle = stripDummy(raw)
         val prefix = CompletionUtil.findReferenceOrAlphanumericPrefix(parameters)
 
         val isDotted = needle.contains('.')
+
+        val matched = if (isDotted && needle.isNotEmpty())
+            result.withPrefixMatcher(PlainPrefixMatcher(needle))
+        else result
+        val out = matched.withRelevanceSorter(buildSorter())
+
         val term = when {
             needle.isEmpty() -> prefix
             isDotted -> needle.substringAfterLast('.', "")
@@ -51,46 +63,79 @@ class YamlTargetCompletionProvider : CompletionProvider<CompletionParameters>() 
         val session = CompletionSession(project, scopes, term, needle, isDotted)
 
         ReadAction.run<RuntimeException> {
-            val allKeys = PyClassNameIndex.allKeys(project)
-            val filteredKeys = session.filterKeys(allKeys, prefix)
+            if (isDotted) {
+                // Fast package discovery from __init__.py files (VFS scan, no class resolution)
+                session.discoverPackageEdges(scopes.project)
+                session.discoverPackageEdges(scopes.libraries)
 
-            session.processKeys(filteredKeys, scopes.project, { true }, buildFullEdges = true)
-            session.processKeys(filteredKeys, scopes.srforgeLib, { q -> q.startsWith("srforge.") }, buildFullEdges = true)
+                // Discover .py module files in the current prefix package so they
+                // appear as navigable targets (e.g. "lazy_datasets" under "srforge.dataset")
+                session.discoverModulesInPrefix(scopes.project)
+                session.discoverModulesInPrefix(scopes.libraries)
 
-            val allFuncKeys = PyFunctionNameIndex.allKeys(project)
-            val filteredFuncKeys = session.filterKeys(allFuncKeys, prefix)
+                if (term.isNotEmpty()) {
+                    // User is typing a name after the dot — filter keys and resolve
+                    val filteredClassKeys = PyClassNameIndex.allKeys(project)
+                        .filter { it.contains(term, ignoreCase = true) }
+                    session.processKeys(filteredClassKeys, scopes.project, { true }, buildFullEdges = true)
+                    session.processKeys(filteredClassKeys, scopes.libraries, { true }, buildFullEdges = true)
 
-            session.processFunctionKeys(filteredFuncKeys, scopes.project, { true }, buildFullEdges = true)
-            session.processFunctionKeys(filteredFuncKeys, scopes.srforgeLib, { q -> q.startsWith("srforge.") }, buildFullEdges = true)
+                    val filteredFuncKeys = PyFunctionNameIndex.allKeys(project)
+                        .filter { it.contains(term, ignoreCase = true) }
+                    session.processFunctionKeys(filteredFuncKeys, scopes.project, { true }, buildFullEdges = true)
+                    session.processFunctionKeys(filteredFuncKeys, scopes.libraries, { true }, buildFullEdges = true)
+                } else {
+                    // Term is empty (e.g. "srforge.dataset.") — scan .py files in the
+                    // target package/module for classes/functions. Fast and targeted.
+                    session.discoverDirectContent(scopes.project)
+                    session.discoverDirectContent(scopes.libraries)
+                }
 
-            when {
-                !isDotted && needle.isEmpty() ->
-                    session.suggestChildPackages(base = "", partial = null)
+                // Suggest all discovered packages + modules (prefix matcher handles filtering)
+                session.suggestAllPackages()
+            } else {
+                val allKeys = PyClassNameIndex.allKeys(project)
+                val filteredKeys = session.filterKeys(allKeys, prefix)
 
-                !isDotted && needle.isNotEmpty() -> {
-                    var roots = session.matchingRoots(needle)
-                    if (roots.isEmpty()) {
-                        session.buildRootEdgesFast(allKeys, scopes.project, 1500)
-                        session.buildRootEdgesFast(allKeys, scopes.srforgeLib, 1500)
-                        roots = session.matchingRoots(needle)
-                    }
-                    for (root in roots) {
-                        session.suggestPackage(root, root)
-                        session.suggestChildPackages(base = root, partial = null)
+                session.processKeys(filteredKeys, scopes.project, { true }, buildFullEdges = true)
+                session.processKeys(filteredKeys, scopes.srforgeLib, { q -> q.startsWith("srforge.") }, buildFullEdges = true)
+
+                val allFuncKeys = PyFunctionNameIndex.allKeys(project)
+                val filteredFuncKeys = session.filterKeys(allFuncKeys, prefix)
+
+                session.processFunctionKeys(filteredFuncKeys, scopes.project, { true }, buildFullEdges = true)
+                session.processFunctionKeys(filteredFuncKeys, scopes.srforgeLib, { q -> q.startsWith("srforge.") }, buildFullEdges = true)
+
+                if (needle.isNotEmpty()) {
+                    // Discover library packages for root package suggestions + re-export detection
+                    session.discoverPackageEdges(scopes.libraries)
+
+                    // Also search libraries for class/function suggestions (AdamW, Module, etc.)
+                    if (needle.length >= 3) {
+                        session.processKeys(filteredKeys, scopes.libraries, { true }, buildFullEdges = true)
+                        session.processFunctionKeys(filteredFuncKeys, scopes.libraries, { true }, buildFullEdges = true)
                     }
                 }
 
-                isDotted -> {
-                    val lastDot = needle.lastIndexOf('.')
-                    val base = needle.substring(0, lastDot)
-                    val partial = needle.substring(lastDot + 1)
-                    session.suggestChildPackages(base, partial.ifEmpty { null })
+                when {
+                    needle.isEmpty() ->
+                        session.suggestChildPackages(base = "", partial = null)
+
+                    needle.isNotEmpty() -> {
+                        val roots = session.matchingRoots(needle)
+                        for (root in roots) {
+                            session.suggestPackage(root, root)
+                            session.suggestChildPackages(base = root, partial = null)
+                        }
+                    }
                 }
             }
         }
 
         for (el in session.batch) out.addElement(el)
-        out.restartCompletionOnAnyPrefixChange()
+        // Only restart on prefix change for non-dotted case.
+        // For dotted case IntelliJ filters the existing list — avoids expensive re-scans.
+        if (!isDotted) out.restartCompletionOnAnyPrefixChange()
     }
 
     private fun buildSorter(): CompletionSorter =
@@ -139,6 +184,8 @@ class YamlTargetCompletionProvider : CompletionProvider<CompletionParameters>() 
         private val seenFunctions = HashSet<String>()
         private val seenPackages = HashSet<String>()
         private val packageEdges = HashMap<String, MutableSet<String>>()
+        private val packageInitFiles = HashMap<String, VirtualFile>()
+        private val reExportCache = HashMap<String, Set<String>>()
         private val termLower = term.lowercase()
 
         fun filterKeys(allKeys: Collection<String>, prefix: String): Collection<String> = when {
@@ -150,6 +197,122 @@ class YamlTargetCompletionProvider : CompletionProvider<CompletionParameters>() 
             else -> {
                 if (prefix.isNotEmpty()) allKeys.asSequence().filter { it.startsWith(prefix, true) }.toList()
                 else allKeys
+            }
+        }
+
+        /** Discover Python packages by scanning __init__.py files in [scope].
+         *  This is orders of magnitude faster than iterating the class name index
+         *  because it only reads VFS paths — no PSI resolution needed. */
+        fun discoverPackageEdges(scope: GlobalSearchScope) {
+            val fileIndex = ProjectRootManager.getInstance(project).fileIndex
+            val initFiles = FilenameIndex.getVirtualFilesByName("__init__.py", scope)
+            for (f in initFiles) {
+                ProgressManager.checkCanceled()
+                val dir = f.parent ?: continue
+                val root = fileIndex.getSourceRootForFile(f)
+                    ?: fileIndex.getClassRootForFile(f)
+                    ?: continue
+                val relativePath = VfsUtilCore.getRelativePath(dir, root) ?: continue
+                if (relativePath.isEmpty()) continue
+                val parts = relativePath.replace('\\', '/').split('/')
+                val pkgFqn = parts.joinToString(".")
+                packageInitFiles.putIfAbsent(pkgFqn, f)
+                for (i in parts.indices) {
+                    val base = if (i == 0) "" else parts.subList(0, i).joinToString(".")
+                    addPackageEdge(base, parts[i])
+                }
+            }
+        }
+
+        /** Discover .py module files in the package matching the current prefix
+         *  and add them as navigable edges (like packages but for module files).
+         *  E.g. for needle "srforge.dataset.laz", discovers modules in "srforge.dataset". */
+        fun discoverModulesInPrefix(scope: GlobalSearchScope) {
+            val prefixPkg = needle.substringBeforeLast('.', "")
+            if (prefixPkg.isEmpty()) return
+
+            val pkgPath = prefixPkg.replace('.', '/')
+            val fileIndex = ProjectRootManager.getInstance(project).fileIndex
+            val initFiles = FilenameIndex.getVirtualFilesByName("__init__.py", scope)
+
+            for (initFile in initFiles) {
+                ProgressManager.checkCanceled()
+                val dir = initFile.parent ?: continue
+                val root = fileIndex.getSourceRootForFile(initFile)
+                    ?: fileIndex.getClassRootForFile(initFile)
+                    ?: continue
+                val relativePath = VfsUtilCore.getRelativePath(dir, root)?.replace('\\', '/') ?: continue
+                if (relativePath != pkgPath) continue
+
+                // Found the package — add .py files as module edges
+                for (child in dir.children) {
+                    if (child.isDirectory || !child.name.endsWith(".py")) continue
+                    if (child.name == "__init__.py") continue
+                    val moduleName = child.name.removeSuffix(".py")
+                    addPackageEdge(prefixPkg, moduleName)
+                }
+            }
+        }
+
+        /** Scan .py files for top-level classes/functions in the target indicated by [needle].
+         *  Handles both package directories and module files. */
+        fun discoverDirectContent(scope: GlobalSearchScope) {
+            val pkgFqn = needle.trimEnd('.')
+            if (pkgFqn.isEmpty()) return
+
+            val pkgPath = pkgFqn.replace('.', '/')
+            val parentPath = pkgPath.substringBeforeLast('/', "")
+            val lastSegment = pkgPath.substringAfterLast('/')
+            val fileIndex = ProjectRootManager.getInstance(project).fileIndex
+            val psiManager = PsiManager.getInstance(project)
+            val initFiles = FilenameIndex.getVirtualFilesByName("__init__.py", scope)
+
+            for (initFile in initFiles) {
+                ProgressManager.checkCanceled()
+                val dir = initFile.parent ?: continue
+                val root = fileIndex.getSourceRootForFile(initFile)
+                    ?: fileIndex.getClassRootForFile(initFile)
+                    ?: continue
+                val relativePath = VfsUtilCore.getRelativePath(dir, root)?.replace('\\', '/') ?: continue
+
+                when (relativePath) {
+                    // Target is a package directory — scan all .py files in it
+                    pkgPath -> {
+                        for (child in dir.children) {
+                            if (child.isDirectory || !child.name.endsWith(".py")) continue
+                            ProgressManager.checkCanceled()
+                            scanPsiFileForContent(psiManager.findFile(child) ?: continue)
+                        }
+                    }
+                    // Target might be a module file inside this parent package
+                    parentPath -> {
+                        val moduleFile = dir.findChild("$lastSegment.py") ?: continue
+                        scanPsiFileForContent(psiManager.findFile(moduleFile) ?: continue)
+                    }
+                }
+            }
+        }
+
+        private fun scanPsiFileForContent(psiFile: com.intellij.psi.PsiFile) {
+            for (cls in PsiTreeUtil.getChildrenOfType(psiFile, PyClass::class.java).orEmpty()) {
+                val qualified = cls.qualifiedName ?: continue
+                addClassSuggestion(qualified)
+            }
+            for (func in PsiTreeUtil.getChildrenOfType(psiFile, PyFunction::class.java).orEmpty()) {
+                if (func.containingClass != null) continue
+                val qualified = func.qualifiedName ?: continue
+                addFunctionSuggestion(qualified)
+            }
+        }
+
+        /** Add all discovered packages to the batch.
+         *  The prefix matcher on the result set handles filtering. */
+        fun suggestAllPackages() {
+            for ((base, children) in packageEdges) {
+                for (seg in children.sorted()) {
+                    val pkgFqn = if (base.isEmpty()) seg else "$base.$seg"
+                    suggestPackage(pkgFqn, seg)
+                }
             }
         }
 
@@ -179,21 +342,6 @@ class YamlTargetCompletionProvider : CompletionProvider<CompletionParameters>() 
                         }
                         addClassSuggestion(qualified)
                     }
-                }
-            }
-        }
-
-        fun buildRootEdgesFast(allKeys: Collection<String>, scope: GlobalSearchScope, keyLimit: Int) {
-            var scanned = 0
-            for (key in allKeys) {
-                if (scanned++ >= keyLimit) break
-                ProgressManager.checkCanceled()
-                val classes = PyClassNameIndex.find(key, project, scope)
-                if (classes.isEmpty()) continue
-                for (cls in classes) {
-                    val q = cls.qualifiedName ?: continue
-                    val parts = q.split('.')
-                    if (parts.size >= 2) addPackageEdge("", parts[0])
                 }
             }
         }
@@ -228,17 +376,58 @@ class YamlTargetCompletionProvider : CompletionProvider<CompletionParameters>() 
             packageEdges.computeIfAbsent(base) { hashSetOf() }.add(seg)
         }
 
+        /** Get the names re-exported by a package's __init__.py (cached per session). */
+        private fun getReExportedNames(pkgFqn: String): Set<String> {
+            return reExportCache.getOrPut(pkgFqn) {
+                val initVFile = packageInitFiles[pkgFqn] ?: return@getOrPut emptySet()
+                val psiManager = PsiManager.getInstance(project)
+                val psiFile = psiManager.findFile(initVFile) ?: return@getOrPut emptySet()
+                val names = HashSet<String>()
+                for (stmt in PsiTreeUtil.getChildrenOfType(psiFile, PyFromImportStatement::class.java).orEmpty()) {
+                    if (stmt.isStarImport) continue
+                    for (element in stmt.importElements) {
+                        val name = element.visibleName ?: continue
+                        names.add(name)
+                    }
+                }
+                names
+            }
+        }
+
+        /** If the parent package re-exports this name via __init__.py, return the shorter path.
+         *  E.g. "torch.optim.adamw.AdamW" → "torch.optim.AdamW" when torch.optim.__init__
+         *  has `from .adamw import AdamW`. */
+        private fun preferredQualifiedName(canonicalQn: String): String {
+            val parts = canonicalQn.split('.')
+            if (parts.size < 3) return canonicalQn
+
+            val simpleName = parts.last()
+            val parentPkg = parts.subList(0, parts.size - 2).joinToString(".")
+            if (parentPkg.isEmpty()) return canonicalQn
+
+            val shortened = "$parentPkg.$simpleName"
+            // Only shorten if the result still matches the user's current navigation prefix
+            if (isDotted && needle.isNotEmpty()
+                && !shortened.lowercase().startsWith(needle.lowercase())) {
+                return canonicalQn
+            }
+
+            val reExported = getReExportedNames(parentPkg)
+            return if (simpleName in reExported) shortened else canonicalQn
+        }
+
         private fun addClassSuggestion(qualified: String) {
-            if (!seenClasses.add(qualified)) return
-            val simple = qualified.substringAfterLast('.')
-            val tail = qualified.substringBeforeLast('.', "")
-            val el = LookupElementBuilder.create(qualified)
+            val preferred = preferredQualifiedName(qualified)
+            if (!seenClasses.add(preferred)) return
+            val simple = preferred.substringAfterLast('.')
+            val tail = preferred.substringBeforeLast('.', "")
+            val el = LookupElementBuilder.create(preferred)
                 .withPresentableText(simple)
                 .withTypeText(tail, true)
                 .withCaseSensitivity(false)
                 .withIcon(AllIcons.Nodes.Class)
                 .withInsertHandler(classInsertHandler)
-            el.putUserData(PRIORITY_KEY, matchPriority(qualified, simple))
+            el.putUserData(PRIORITY_KEY, matchPriority(preferred, simple))
             el.putUserData(TYPE_KEY, 1)
             batch.add(el)
         }
@@ -275,16 +464,17 @@ class YamlTargetCompletionProvider : CompletionProvider<CompletionParameters>() 
         }
 
         private fun addFunctionSuggestion(qualified: String) {
-            if (!seenFunctions.add(qualified)) return
-            val simple = qualified.substringAfterLast('.')
-            val tail = qualified.substringBeforeLast('.', "")
-            val el = LookupElementBuilder.create(qualified)
+            val preferred = preferredQualifiedName(qualified)
+            if (!seenFunctions.add(preferred)) return
+            val simple = preferred.substringAfterLast('.')
+            val tail = preferred.substringBeforeLast('.', "")
+            val el = LookupElementBuilder.create(preferred)
                 .withPresentableText(simple)
                 .withTypeText(tail, true)
                 .withCaseSensitivity(false)
                 .withIcon(AllIcons.Nodes.Function)
                 .withInsertHandler(classInsertHandler)
-            el.putUserData(PRIORITY_KEY, matchPriority(qualified, simple))
+            el.putUserData(PRIORITY_KEY, matchPriority(preferred, simple))
             el.putUserData(TYPE_KEY, 2)
             batch.add(el)
         }
@@ -353,7 +543,6 @@ class YamlTargetCompletionProvider : CompletionProvider<CompletionParameters>() 
     companion object {
         private val PRIORITY_KEY: Key<Double> = Key.create("srforge.yamlTargetPriority")
         private val TYPE_KEY: Key<Int> = Key.create("srforge.yamlTargetType")
-
         fun stripDummy(s: String): String = s
             .replace(CompletionUtilCore.DUMMY_IDENTIFIER_TRIMMED, "")
             .replace(CompletionUtilCore.DUMMY_IDENTIFIER, "")

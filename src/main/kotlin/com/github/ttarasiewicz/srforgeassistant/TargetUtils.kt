@@ -40,6 +40,15 @@ object TargetUtils {
         //    e.g., "pkg.MagNAt" → "pkg.MagNAt.MagNAt"
         candidates.firstOrNull { it.qualifiedName == "$fqn.$simple" }?.let { return it }
 
+        // 3. Submodule re-export: class lives one module deeper than the FQN implies
+        //    e.g., "torch.optim.AdamW" → "torch.optim.adamw.AdamW"
+        val fqnParent = fqn.substringBeforeLast('.')
+        candidates.firstOrNull {
+            val qn = it.qualifiedName ?: return@firstOrNull false
+            val qnParent = qn.substringBeforeLast('.')
+            qnParent.startsWith("$fqnParent.") && !qnParent.substring(fqnParent.length + 1).contains('.')
+        }?.let { return it }
+
         return null
     }
 
@@ -54,6 +63,13 @@ object TargetUtils {
 
         candidates.firstOrNull { it.qualifiedName == fqn }?.let { return it }
         candidates.firstOrNull { it.qualifiedName == "$fqn.$simple" }?.let { return it }
+
+        val fqnParent = fqn.substringBeforeLast('.')
+        candidates.firstOrNull {
+            val qn = it.qualifiedName ?: return@firstOrNull false
+            val qnParent = qn.substringBeforeLast('.')
+            qnParent.startsWith("$fqnParent.") && !qnParent.substring(fqnParent.length + 1).contains('.')
+        }?.let { return it }
 
         return null
     }

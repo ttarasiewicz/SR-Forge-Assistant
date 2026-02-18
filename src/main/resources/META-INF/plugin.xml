@@ -23,5 +23,7 @@
         <psi.referenceContributor
                 language="yaml"
                 implementation="com.github.ttarasiewicz.srforgeassistant.YamlTargetReferenceContributor"/>
+        <typedHandler
+                implementation="com.github.ttarasiewicz.srforgeassistant.TargetDotTypedHandler"/>
     </extensions>
 </idea-plugin>
