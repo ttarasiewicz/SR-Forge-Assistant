@@ -12,5 +12,10 @@ class YamlTargetCompletionContributor : CompletionContributor() {
             PlatformPatterns.psiElement().withLanguage(YAMLLanguage.INSTANCE),
             YamlTargetCompletionProvider()
         )
+        extend(
+            CompletionType.BASIC,
+            PlatformPatterns.psiElement().withLanguage(YAMLLanguage.INSTANCE),
+            YamlParamCompletionProvider()
+        )
     }
 }

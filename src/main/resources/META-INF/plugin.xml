@@ -25,5 +25,26 @@
                 implementation="com.github.ttarasiewicz.srforgeassistant.YamlTargetReferenceContributor"/>
         <typedHandler
                 implementation="com.github.ttarasiewicz.srforgeassistant.TargetDotTypedHandler"/>
+
+        <intentionAction>
+            <language>yaml</language>
+            <className>com.github.ttarasiewicz.srforgeassistant.GenerateParamStubsIntention</className>
+            <category>YAML</category>
+        </intentionAction>
+
+        <localInspection
+                language="yaml"
+                groupName="SR-Forge Assistant"
+                displayName="Missing required parameters in params"
+                implementationClass="com.github.ttarasiewicz.srforgeassistant.MissingRequiredParamsInspection"
+                enabledByDefault="true"
+                level="WARNING"/>
+        <localInspection
+                language="yaml"
+                groupName="SR-Forge Assistant"
+                displayName="Unknown parameter name in params"
+                implementationClass="com.github.ttarasiewicz.srforgeassistant.UnknownParamNameInspection"
+                enabledByDefault="true"
+                level="WARNING"/>
     </extensions>
 </idea-plugin>
