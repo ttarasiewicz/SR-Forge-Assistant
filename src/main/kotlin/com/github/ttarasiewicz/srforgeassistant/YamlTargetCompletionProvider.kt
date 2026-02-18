@@ -40,6 +40,11 @@ class YamlTargetCompletionProvider : CompletionProvider<CompletionParameters>() 
         if (DumbService.isDumb(project)) return
 
         val scalar = TargetUtils.getTargetScalar(parameters.position) ?: return
+
+        // If inside an interpolation expression, let the interpolation contributor handle it
+        if (YamlInterpolationCompletionContributor.isInsideInterpolation(
+                parameters.editor.document.text, parameters.offset)) return
+
         result.stopHere()
 
         val raw = scalar.textValue.orEmpty()
