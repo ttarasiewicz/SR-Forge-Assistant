@@ -10,8 +10,8 @@ import java.awt.event.MouseEvent
 import javax.swing.*
 
 /**
- * Displays field rows with color-coded diff backgrounds.
- * Rows expand on click to show full details.
+ * Displays fields as individual expandable blocks with color-coded borders.
+ * All blocks start expanded; clicking the header collapses/expands.
  */
 class FieldDetailPanel(private val diffs: List<FieldDiff>) : JPanel() {
 
@@ -19,201 +19,246 @@ class FieldDetailPanel(private val diffs: List<FieldDiff>) : JPanel() {
         layout = BoxLayout(this, BoxLayout.Y_AXIS)
         isOpaque = false
 
-        // Header row
-        addHeaderRow()
-
         for (diff in diffs) {
-            addFieldRow(diff)
+            add(createFieldBlock(diff))
+            add(Box.createVerticalStrut(JBUI.scale(3)))
         }
     }
 
-    private fun addHeaderRow() {
-        val row = JPanel(GridBagLayout()).apply {
-            maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(22))
-            border = JBUI.Borders.empty(1, 4)
-            isOpaque = false
-        }
-        val gbc = GridBagConstraints().apply {
-            fill = GridBagConstraints.HORIZONTAL
-            insets = Insets(0, 2, 0, 2)
-            gridy = 0
-        }
+    private fun createFieldBlock(diff: FieldDiff): JPanel {
+        val field = diff.after ?: diff.before ?: return JPanel()
+        val borderColor = diffBorderColor(diff.status)
+        val bgColor = diffBackground(diff.status)
+        val statusIcon = statusIcon(diff.status)
 
-        val headerFont = UIUtil.getLabelFont().deriveFont(Font.BOLD, UIUtil.getFontSize(UIUtil.FontSize.SMALL))
-        val headerColor = UIUtil.getInactiveTextColor()
-
-        gbc.gridx = 0; gbc.weightx = 0.0; gbc.ipadx = JBUI.scale(16)
-        row.add(makeLabel("", headerFont, headerColor), gbc)
-
-        gbc.gridx = 1; gbc.weightx = 0.2; gbc.ipadx = 0
-        row.add(makeLabel("Key", headerFont, headerColor), gbc)
-
-        gbc.gridx = 2; gbc.weightx = 0.2
-        row.add(makeLabel("Type", headerFont, headerColor), gbc)
-
-        gbc.gridx = 3; gbc.weightx = 0.15
-        row.add(makeLabel("Shape", headerFont, headerColor), gbc)
-
-        gbc.gridx = 4; gbc.weightx = 0.1
-        row.add(makeLabel("DType", headerFont, headerColor), gbc)
-
-        gbc.gridx = 5; gbc.weightx = 0.15
-        row.add(makeLabel("Range", headerFont, headerColor), gbc)
-
-        gbc.gridx = 6; gbc.weightx = 0.2
-        row.add(makeLabel("Preview", headerFont, headerColor), gbc)
-
-        row.alignmentX = Component.LEFT_ALIGNMENT
-        add(row)
-    }
-
-    private fun addFieldRow(diff: FieldDiff) {
-        val field = diff.after ?: diff.before ?: return
-        val bg = diffBackground(diff.status)
-        val statusChar = when (diff.status) {
-            FieldDiffStatus.ADDED -> "+"
-            FieldDiffStatus.REMOVED -> "-"
-            FieldDiffStatus.MODIFIED -> "~"
-            FieldDiffStatus.UNCHANGED -> " "
-        }
-        val statusColor = when (diff.status) {
-            FieldDiffStatus.ADDED -> JBColor(Color(0x2E7D32), Color(0x66BB6A))
-            FieldDiffStatus.REMOVED -> JBColor(Color(0xC62828), Color(0xEF5350))
-            FieldDiffStatus.MODIFIED -> JBColor(Color(0xF57F17), Color(0xFFCA28))
-            FieldDiffStatus.UNCHANGED -> UIUtil.getLabelForeground()
+        val block = JPanel().apply {
+            layout = BoxLayout(this, BoxLayout.Y_AXIS)
+            alignmentX = Component.LEFT_ALIGNMENT
+            maximumSize = Dimension(Int.MAX_VALUE, Int.MAX_VALUE)
+            border = BorderFactory.createCompoundBorder(
+                BorderFactory.createMatteBorder(0, JBUI.scale(3), 0, 0, borderColor),
+                JBUI.Borders.empty(0, 0)
+            )
         }
 
-        val typeName = field.pythonType.substringAfterLast('.')
-        val range = buildRangeText(field)
+        // Header bar — field name + type summary (always visible)
+        val headerPanel = createHeaderPanel(diff, field, statusIcon, bgColor)
 
-        val row = JPanel(GridBagLayout()).apply {
-            maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(22))
-            border = JBUI.Borders.empty(1, 4)
-            background = bg
-            isOpaque = bg != null
-        }
+        // Detail body — expanded by default
+        val bodyPanel = createBodyPanel(diff, field, bgColor)
 
-        val gbc = GridBagConstraints().apply {
-            fill = GridBagConstraints.HORIZONTAL
-            insets = Insets(0, 2, 0, 2)
-            gridy = 0
-        }
-
-        val smallFont = UIUtil.getLabelFont().deriveFont(UIUtil.getFontSize(UIUtil.FontSize.SMALL))
-        val fg = UIUtil.getLabelForeground()
-
-        gbc.gridx = 0; gbc.weightx = 0.0; gbc.ipadx = JBUI.scale(16)
-        row.add(makeLabel(statusChar, smallFont.deriveFont(Font.BOLD), statusColor), gbc)
-
-        gbc.gridx = 1; gbc.weightx = 0.2; gbc.ipadx = 0
-        row.add(makeLabel(field.key, smallFont.deriveFont(Font.BOLD), fg), gbc)
-
-        gbc.gridx = 2; gbc.weightx = 0.2
-        row.add(makeLabel(typeName, smallFont, fg), gbc)
-
-        gbc.gridx = 3; gbc.weightx = 0.15
-        row.add(makeLabel(field.shape ?: "", smallFont, fg), gbc)
-
-        gbc.gridx = 4; gbc.weightx = 0.1
-        row.add(makeLabel(field.dtype ?: "", smallFont, fg), gbc)
-
-        gbc.gridx = 5; gbc.weightx = 0.15
-        row.add(makeLabel(range, smallFont, fg), gbc)
-
-        gbc.gridx = 6; gbc.weightx = 0.2
-        row.add(makeLabel(field.preview?.take(60) ?: "", smallFont, UIUtil.getInactiveTextColor()), gbc)
-
-        row.alignmentX = Component.LEFT_ALIGNMENT
-
-        // Expandable detail on click
-        val detailPanel = createDetailPanel(diff)
-        detailPanel.isVisible = false
-        detailPanel.alignmentX = Component.LEFT_ALIGNMENT
-
-        row.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-        row.addMouseListener(object : MouseAdapter() {
+        headerPanel.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+        headerPanel.addMouseListener(object : MouseAdapter() {
             override fun mouseClicked(e: MouseEvent) {
-                detailPanel.isVisible = !detailPanel.isVisible
-                revalidate()
-                repaint()
+                bodyPanel.isVisible = !bodyPanel.isVisible
+                // Update collapse indicator
+                val indicator = headerPanel.getClientProperty("collapseLabel") as? JBLabel
+                indicator?.text = if (bodyPanel.isVisible) "\u25BE" else "\u25B8"
+                block.revalidate()
+                block.repaint()
             }
         })
 
-        add(row)
-        add(detailPanel)
+        block.add(headerPanel)
+        block.add(bodyPanel)
+        return block
     }
 
-    private fun createDetailPanel(diff: FieldDiff): JPanel {
-        val panel = JPanel().apply {
-            layout = BoxLayout(this, BoxLayout.Y_AXIS)
-            border = JBUI.Borders.empty(2, 24, 4, 4)
+    private fun createHeaderPanel(
+        diff: FieldDiff,
+        field: FieldSnapshot,
+        statusIcon: String,
+        bgColor: Color?
+    ): JPanel {
+        val typeName = field.pythonType.substringAfterLast('.')
+        val shapeSummary = buildShapeSummary(field)
+
+        val panel = JPanel(BorderLayout()).apply {
+            maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(26))
+            border = JBUI.Borders.empty(3, 8, 3, 8)
+            if (bgColor != null) {
+                background = bgColor
+                isOpaque = true
+            } else {
+                isOpaque = false
+            }
+        }
+
+        val leftPanel = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0)).apply {
             isOpaque = false
         }
 
-        val smallFont = Font(Font.MONOSPACED, Font.PLAIN, UIUtil.getFontSize(UIUtil.FontSize.SMALL).toInt())
-        val fg = UIUtil.getInactiveTextColor()
+        // Collapse indicator (collapsed by default)
+        val collapseLabel = JBLabel("\u25B8").apply {
+            foreground = UIUtil.getInactiveTextColor()
+            font = font.deriveFont(Font.PLAIN, font.size - 1f)
+        }
+        panel.putClientProperty("collapseLabel", collapseLabel)
+        leftPanel.add(collapseLabel)
 
-        val field = diff.after ?: diff.before ?: return panel
-
-        panel.add(detailRow("Full type:", field.pythonType, smallFont, fg))
-        if (field.shape != null) panel.add(detailRow("Shape:", field.shape, smallFont, fg))
-        if (field.dtype != null) panel.add(detailRow("DType:", field.dtype, smallFont, fg))
-        if (field.minValue != null) panel.add(detailRow("Min:", field.minValue, smallFont, fg))
-        if (field.maxValue != null) panel.add(detailRow("Max:", field.maxValue, smallFont, fg))
-        if (field.sizeBytes != null) panel.add(detailRow("Size:", formatBytes(field.sizeBytes), smallFont, fg))
-        if (field.preview != null) panel.add(detailRow("Preview:", field.preview, smallFont, fg))
-
-        if (diff.status == FieldDiffStatus.MODIFIED && diff.before != null) {
-            panel.add(Box.createVerticalStrut(JBUI.scale(2)))
-            val beforeLabel = JBLabel("Before:").apply {
-                this.font = smallFont.deriveFont(Font.BOLD)
-                foreground = fg
+        // Status icon
+        if (statusIcon.isNotEmpty()) {
+            val statusLabel = JBLabel(statusIcon).apply {
+                foreground = diffStatusColor(diff.status)
+                font = font.deriveFont(Font.BOLD)
             }
-            panel.add(beforeLabel)
-            val b = diff.before
-            if (b.shape != null) panel.add(detailRow("  Shape:", b.shape, smallFont, fg))
-            if (b.dtype != null) panel.add(detailRow("  DType:", b.dtype, smallFont, fg))
-            if (b.minValue != null) panel.add(detailRow("  Min:", b.minValue, smallFont, fg))
-            if (b.maxValue != null) panel.add(detailRow("  Max:", b.maxValue, smallFont, fg))
-            if (b.sizeBytes != null) panel.add(detailRow("  Size:", formatBytes(b.sizeBytes), smallFont, fg))
+            leftPanel.add(statusLabel)
+        }
+
+        // Field name
+        leftPanel.add(JBLabel(field.key).apply {
+            font = font.deriveFont(Font.BOLD)
+        })
+
+        // Type + shape summary (muted)
+        val childCount = diff.childDiffs?.size ?: 0
+        val childHint = if (childCount > 0) "  ($childCount elements)" else ""
+        leftPanel.add(JBLabel(typeName + shapeSummary + childHint).apply {
+            foreground = UIUtil.getInactiveTextColor()
+            font = font.deriveFont(font.size - 1f)
+        })
+
+        panel.add(leftPanel, BorderLayout.WEST)
+
+        // Right side: size badge
+        if (field.sizeBytes != null) {
+            panel.add(JBLabel(formatBytes(field.sizeBytes)).apply {
+                foreground = UIUtil.getInactiveTextColor()
+                font = font.deriveFont(font.size - 1f)
+                border = JBUI.Borders.emptyRight(4)
+            }, BorderLayout.EAST)
         }
 
         return panel
     }
 
-    private fun detailRow(label: String, value: String, font: Font, color: Color): JPanel {
-        return JPanel(FlowLayout(FlowLayout.LEFT, 4, 0)).apply {
+    private fun createBodyPanel(diff: FieldDiff, field: FieldSnapshot, bgColor: Color?): JPanel {
+        val panel = JPanel().apply {
+            layout = BoxLayout(this, BoxLayout.Y_AXIS)
+            border = JBUI.Borders.empty(2, 20, 6, 8)
+            if (bgColor != null) {
+                background = bgColor
+                isOpaque = true
+            } else {
+                isOpaque = false
+            }
+            // Start collapsed — user clicks field header to expand
+            isVisible = false
+        }
+
+        val monoFont = Font(Font.MONOSPACED, Font.PLAIN, UIUtil.getFontSize(UIUtil.FontSize.SMALL).toInt())
+        val detailColor = UIUtil.getLabelForeground()
+        val mutedColor = UIUtil.getInactiveTextColor()
+
+        // Detail rows
+        if (field.shape != null) addDetailRow(panel, "Shape", field.shape, monoFont, detailColor)
+        if (field.dtype != null) addDetailRow(panel, "DType", field.dtype, monoFont, detailColor)
+        if (field.minValue != null && field.maxValue != null) {
+            addDetailRow(panel, "Range", "[${field.minValue}, ${field.maxValue}]", monoFont, detailColor)
+        } else if (field.minValue != null) {
+            addDetailRow(panel, "Min", field.minValue, monoFont, detailColor)
+        }
+        if (field.meanValue != null) addDetailRow(panel, "Mean", field.meanValue, monoFont, detailColor)
+        if (field.stdValue != null) addDetailRow(panel, "Std", field.stdValue, monoFont, detailColor)
+        if (field.preview != null) addDetailRow(panel, "Value", field.preview, monoFont, mutedColor)
+
+        // Show "before" comparison for modified fields
+        if (diff.status == FieldDiffStatus.MODIFIED && diff.before != null) {
+            panel.add(Box.createVerticalStrut(JBUI.scale(3)))
+            panel.add(JSeparator().apply {
+                maximumSize = Dimension(Int.MAX_VALUE, 1)
+                alignmentX = Component.LEFT_ALIGNMENT
+            })
+            panel.add(Box.createVerticalStrut(JBUI.scale(3)))
+
+            val b = diff.before
+            val beforeColor = JBColor(Color(0x9E9E9E), Color(0x787878))
+            panel.add(JBLabel("Before:").apply {
+                font = monoFont.deriveFont(Font.BOLD)
+                foreground = beforeColor
+                alignmentX = Component.LEFT_ALIGNMENT
+            })
+            if (b.shape != null && b.shape != field.shape)
+                addDetailRow(panel, "  Shape", b.shape, monoFont, beforeColor)
+            if (b.dtype != null && b.dtype != field.dtype)
+                addDetailRow(panel, "  DType", b.dtype, monoFont, beforeColor)
+            if (b.minValue != null && (b.minValue != field.minValue || b.maxValue != field.maxValue))
+                addDetailRow(panel, "  Range", "[${b.minValue}, ${b.maxValue ?: "?"}]", monoFont, beforeColor)
+            if (b.meanValue != null && b.meanValue != field.meanValue)
+                addDetailRow(panel, "  Mean", b.meanValue, monoFont, beforeColor)
+            if (b.stdValue != null && b.stdValue != field.stdValue)
+                addDetailRow(panel, "  Std", b.stdValue, monoFont, beforeColor)
+            if (b.preview != null && b.preview != field.preview)
+                addDetailRow(panel, "  Value", b.preview, monoFont, beforeColor)
+            if (b.sizeBytes != null && b.sizeBytes != field.sizeBytes)
+                addDetailRow(panel, "  Size", formatBytes(b.sizeBytes), monoFont, beforeColor)
+        }
+
+        // Nested children for containers (dicts, lists, tuples)
+        if (!diff.childDiffs.isNullOrEmpty()) {
+            panel.add(Box.createVerticalStrut(JBUI.scale(4)))
+            val childPanel = FieldDetailPanel(diff.childDiffs)
+            childPanel.alignmentX = Component.LEFT_ALIGNMENT
+            panel.add(childPanel)
+        }
+
+        return panel
+    }
+
+    private fun addDetailRow(panel: JPanel, label: String, value: String, font: Font, color: Color) {
+        val row = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(6), 0)).apply {
             isOpaque = false
             alignmentX = Component.LEFT_ALIGNMENT
             maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(18))
-            add(JBLabel(label).apply { this.font = font.deriveFont(Font.BOLD); foreground = color })
-            add(JBLabel(value).apply { this.font = font; foreground = color })
         }
+        row.add(JBLabel(label).apply { this.font = font.deriveFont(Font.BOLD); foreground = color })
+        row.add(JBLabel(value).apply { this.font = font; foreground = color })
+        panel.add(row)
     }
 
-    private fun buildRangeText(field: FieldSnapshot): String {
-        val min = field.minValue ?: return ""
-        val max = field.maxValue ?: return min
-        return "[$min, $max]"
-    }
-
-    private fun makeLabel(text: String, font: Font, fg: Color): JBLabel {
-        return JBLabel(text).apply {
-            this.font = font
-            foreground = fg
-        }
+    private fun buildShapeSummary(field: FieldSnapshot): String {
+        val parts = mutableListOf<String>()
+        if (field.shape != null) parts.add(field.shape)
+        if (field.dtype != null) parts.add(field.dtype)
+        return if (parts.isNotEmpty()) "  " + parts.joinToString(" ") else ""
     }
 
     companion object {
+        private val BORDER_ADDED = JBColor(Color(0x4CAF50), Color(0x388E3C))
+        private val BORDER_REMOVED = JBColor(Color(0xF44336), Color(0xD32F2F))
+        private val BORDER_MODIFIED = JBColor(Color(0xFFC107), Color(0xFFA000))
+        private val BORDER_UNCHANGED = JBColor(Color(0xBDBDBD), Color(0x616161))
+
         private val BG_ADDED = JBColor(Color(0xE8F5E9), Color(0x1B3B1B))
         private val BG_REMOVED = JBColor(Color(0xFFEBEE), Color(0x3B1B1B))
         private val BG_MODIFIED = JBColor(Color(0xFFF8E1), Color(0x3B3B1B))
+
+        fun diffBorderColor(status: FieldDiffStatus): Color = when (status) {
+            FieldDiffStatus.ADDED -> BORDER_ADDED
+            FieldDiffStatus.REMOVED -> BORDER_REMOVED
+            FieldDiffStatus.MODIFIED -> BORDER_MODIFIED
+            FieldDiffStatus.UNCHANGED -> BORDER_UNCHANGED
+        }
 
         fun diffBackground(status: FieldDiffStatus): Color? = when (status) {
             FieldDiffStatus.ADDED -> BG_ADDED
             FieldDiffStatus.REMOVED -> BG_REMOVED
             FieldDiffStatus.MODIFIED -> BG_MODIFIED
             FieldDiffStatus.UNCHANGED -> null
+        }
+
+        fun diffStatusColor(status: FieldDiffStatus): Color = when (status) {
+            FieldDiffStatus.ADDED -> JBColor(Color(0x2E7D32), Color(0x66BB6A))
+            FieldDiffStatus.REMOVED -> JBColor(Color(0xC62828), Color(0xEF5350))
+            FieldDiffStatus.MODIFIED -> JBColor(Color(0xF57F17), Color(0xFFCA28))
+            FieldDiffStatus.UNCHANGED -> UIUtil.getLabelForeground()
+        }
+
+        fun statusIcon(status: FieldDiffStatus): String = when (status) {
+            FieldDiffStatus.ADDED -> "+"
+            FieldDiffStatus.REMOVED -> "\u2212"
+            FieldDiffStatus.MODIFIED -> "~"
+            FieldDiffStatus.UNCHANGED -> ""
         }
 
         fun formatBytes(bytes: Long): String = when {

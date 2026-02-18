@@ -107,109 +107,124 @@ object ProbeScriptGenerator {
 
     @Suppress("SpellCheckingInspection")
     private val SNAPSHOT_FUNCTION = """
-def _snapshot_entry(entry, label, step_index):
-    # Capture the state of an Entry's fields.
+def _snapshot_value(v, key, depth=2):
+    # Snapshot a single value with optional children for containers.
     import torch
     import numpy as np
-    fields = []
+    info = {
+        'key': key,
+        'pythonType': type(v).__module__ + '.' + type(v).__qualname__,
+        'shape': None, 'dtype': None,
+        'minValue': None, 'maxValue': None,
+        'meanValue': None, 'stdValue': None,
+        'preview': None, 'sizeBytes': None,
+        'children': None,
+    }
+    if isinstance(v, torch.Tensor):
+        info['shape'] = str(list(v.shape))
+        info['dtype'] = str(v.dtype).replace('torch.', '')
+        info['sizeBytes'] = v.element_size() * v.nelement()
+        try:
+            if v.numel() > 0:
+                fv = v.float()
+                info['minValue'] = f'{fv.min().item():.6g}'
+                info['maxValue'] = f'{fv.max().item():.6g}'
+                info['meanValue'] = f'{fv.mean().item():.6g}'
+                info['stdValue'] = f'{fv.std().item():.6g}'
+        except Exception:
+            pass
+        try:
+            flat = v.flatten()[:8]
+            info['preview'] = str(flat.tolist())
+        except Exception:
+            info['preview'] = f'Tensor{list(v.shape)}'
+    elif isinstance(v, np.ndarray):
+        info['shape'] = str(list(v.shape))
+        info['dtype'] = str(v.dtype)
+        info['sizeBytes'] = int(v.nbytes)
+        try:
+            if v.size > 0:
+                fv = v.astype(float)
+                info['minValue'] = f'{fv.min():.6g}'
+                info['maxValue'] = f'{fv.max():.6g}'
+                info['meanValue'] = f'{fv.mean():.6g}'
+                info['stdValue'] = f'{fv.std():.6g}'
+        except Exception:
+            pass
+        try:
+            info['preview'] = str(v.flatten()[:8].tolist())
+        except Exception:
+            info['preview'] = f'ndarray{list(v.shape)}'
+    elif isinstance(v, dict):
+        info['preview'] = f'dict({len(v)} keys)'
+        total_bytes = 0
+        for dk, dv in v.items():
+            if isinstance(dv, torch.Tensor):
+                total_bytes += dv.element_size() * dv.nelement()
+            elif isinstance(dv, np.ndarray):
+                total_bytes += int(dv.nbytes)
+        if total_bytes > 0:
+            info['sizeBytes'] = total_bytes
+        if depth > 0 and len(v) <= 200:
+            info['children'] = [_snapshot_value(dv, str(dk), depth - 1) for dk, dv in v.items()]
+    elif isinstance(v, (list, tuple)):
+        type_name = type(v).__name__
+        info['preview'] = f'{type_name}(len={len(v)})'
+        total_bytes = 0
+        for item in v:
+            if isinstance(item, torch.Tensor):
+                total_bytes += item.element_size() * item.nelement()
+            elif isinstance(item, np.ndarray):
+                total_bytes += int(item.nbytes)
+        if total_bytes > 0:
+            info['sizeBytes'] = total_bytes
+        # Aggregate stats for homogeneous tensor/ndarray lists
+        if len(v) > 0:
+            first = v[0]
+            if isinstance(first, torch.Tensor):
+                info['shape'] = f'[{len(v)}x{list(first.shape)}]'
+                try:
+                    tensors = [t for t in v if isinstance(t, torch.Tensor) and t.numel() > 0]
+                    all_vals = torch.cat([t.float().flatten() for t in tensors])
+                    info['minValue'] = f'{all_vals.min().item():.6g}'
+                    info['maxValue'] = f'{all_vals.max().item():.6g}'
+                    info['meanValue'] = f'{all_vals.mean().item():.6g}'
+                    info['stdValue'] = f'{all_vals.std().item():.6g}'
+                except Exception:
+                    pass
+            elif isinstance(first, np.ndarray):
+                info['shape'] = f'[{len(v)}x{list(first.shape)}]'
+                try:
+                    arrays = [a.astype(float).flatten() for a in v if isinstance(a, np.ndarray) and a.size > 0]
+                    all_vals = np.concatenate(arrays)
+                    info['minValue'] = f'{all_vals.min():.6g}'
+                    info['maxValue'] = f'{all_vals.max():.6g}'
+                    info['meanValue'] = f'{all_vals.mean():.6g}'
+                    info['stdValue'] = f'{all_vals.std():.6g}'
+                except Exception:
+                    pass
+        if depth > 0:
+            limit = min(len(v), 200)
+            children = [_snapshot_value(v[i], f'[{i}]', depth - 1) for i in range(limit)]
+            if len(v) > limit:
+                children.append({
+                    'key': f'... {len(v) - limit} more', 'pythonType': '',
+                    'shape': None, 'dtype': None, 'minValue': None, 'maxValue': None,
+                    'meanValue': None, 'stdValue': None,
+                    'preview': None, 'sizeBytes': None, 'children': None,
+                })
+            info['children'] = children
+    elif isinstance(v, (str, int, float, bool)):
+        info['preview'] = repr(v)
+    else:
+        info['preview'] = repr(v)[:100]
+    return info
+
+
+def _snapshot_entry(entry, label, step_index):
+    # Capture the state of an Entry's fields.
     keys = sorted(entry.keys()) if hasattr(entry, 'keys') else []
-    for key in keys:
-        val = entry[key]
-        info = {
-            'key': key,
-            'pythonType': type(val).__module__ + '.' + type(val).__qualname__,
-            'shape': None, 'dtype': None,
-            'minValue': None, 'maxValue': None,
-            'preview': None, 'sizeBytes': None,
-        }
-        if isinstance(val, torch.Tensor):
-            info['shape'] = str(list(val.shape))
-            info['dtype'] = str(val.dtype).replace('torch.', '')
-            info['sizeBytes'] = val.element_size() * val.nelement()
-            try:
-                if val.numel() > 0:
-                    info['minValue'] = f'{val.float().min().item():.6g}'
-                    info['maxValue'] = f'{val.float().max().item():.6g}'
-            except Exception:
-                pass
-            try:
-                flat = val.flatten()[:8]
-                info['preview'] = str(flat.tolist())
-            except Exception:
-                info['preview'] = f'Tensor{list(val.shape)}'
-        elif isinstance(val, np.ndarray):
-            info['shape'] = str(list(val.shape))
-            info['dtype'] = str(val.dtype)
-            info['sizeBytes'] = int(val.nbytes)
-            try:
-                if val.size > 0:
-                    info['minValue'] = f'{val.min():.6g}'
-                    info['maxValue'] = f'{val.max():.6g}'
-            except Exception:
-                pass
-            try:
-                info['preview'] = str(val.flatten()[:8].tolist())
-            except Exception:
-                info['preview'] = f'ndarray{list(val.shape)}'
-        elif isinstance(val, dict):
-            sub_shapes = {}
-            total_bytes = 0
-            for k, v in val.items():
-                if isinstance(v, torch.Tensor):
-                    sub_shapes[k] = list(v.shape)
-                    total_bytes += v.element_size() * v.nelement()
-                elif isinstance(v, np.ndarray):
-                    sub_shapes[k] = list(v.shape)
-                    total_bytes += int(v.nbytes)
-            if sub_shapes:
-                info['shape'] = json.dumps(sub_shapes)
-                info['sizeBytes'] = total_bytes
-            info['preview'] = f'dict({len(val)} keys: {list(val.keys())[:5]})'
-        elif isinstance(val, (str, int, float, bool)):
-            info['preview'] = repr(val)
-        elif isinstance(val, (list, tuple)):
-            info['preview'] = f'{type(val).__name__}(len={len(val)})'
-            total_bytes = 0
-            if len(val) > 0:
-                first = val[0]
-                if isinstance(first, torch.Tensor):
-                    info['shape'] = f'[{len(val)}x{list(first.shape)}]'
-                    total_bytes = sum(t.element_size() * t.nelement() for t in val if isinstance(t, torch.Tensor))
-                    try:
-                        # Sample values from first tensor for change detection
-                        sample = first.flatten()[:4].tolist()
-                        info['preview'] = f'list(len={len(val)}) [{", ".join(f"{v:.4g}" for v in sample)}, ...]'
-                    except Exception:
-                        pass
-                    try:
-                        mins = [t.float().min().item() for t in val if isinstance(t, torch.Tensor) and t.numel() > 0]
-                        maxs = [t.float().max().item() for t in val if isinstance(t, torch.Tensor) and t.numel() > 0]
-                        if mins and maxs:
-                            info['minValue'] = f'{min(mins):.6g}'
-                            info['maxValue'] = f'{max(maxs):.6g}'
-                    except Exception:
-                        pass
-                elif isinstance(first, np.ndarray):
-                    info['shape'] = f'[{len(val)}x{list(first.shape)}]'
-                    total_bytes = sum(int(a.nbytes) for a in val if isinstance(a, np.ndarray))
-                    try:
-                        sample = first.flatten()[:4].tolist()
-                        info['preview'] = f'list(len={len(val)}) [{", ".join(f"{v:.4g}" for v in sample)}, ...]'
-                    except Exception:
-                        pass
-                    try:
-                        mins = [a.min() for a in val if isinstance(a, np.ndarray) and a.size > 0]
-                        maxs = [a.max() for a in val if isinstance(a, np.ndarray) and a.size > 0]
-                        if mins and maxs:
-                            info['minValue'] = f'{min(mins):.6g}'
-                            info['maxValue'] = f'{max(maxs):.6g}'
-                    except Exception:
-                        pass
-            if total_bytes > 0:
-                info['sizeBytes'] = total_bytes
-        else:
-            info['preview'] = repr(val)[:100]
-        fields.append(info)
+    fields = [_snapshot_value(entry[key], key) for key in keys]
     return {
         'stepLabel': label,
         'stepIndex': step_index,
@@ -337,7 +352,7 @@ def _probe_node(parser, node, path):
 
     # Get first entry (without transforms since we stripped them)
     entry = dataset[0]
-    snapshots = [_snapshot_entry(entry, f'Initial ({target_name})', 0)]
+    snapshots = [_snapshot_entry(entry, target_name, 0)]
 
     # Apply transforms one by one
     if transforms_source is not None:
@@ -349,7 +364,7 @@ def _probe_node(parser, node, path):
             t_name = type(transform).__name__
             try:
                 entry = transform(entry)
-                snapshots.append(_snapshot_entry(entry, f'After {t_name}', i + 1))
+                snapshots.append(_snapshot_entry(entry, t_name, i + 1))
             except Exception as e:
                 snapshots.append({
                     'stepLabel': f'ERROR at {t_name}: {e}',
@@ -367,7 +382,7 @@ def _probe_node(parser, node, path):
                 transform = parser(t_cfg)
                 t_name = type(transform).__name__
                 entry = transform(entry)
-                snapshots.append(_snapshot_entry(entry, f'After {t_name}', i + 1))
+                snapshots.append(_snapshot_entry(entry, t_name, i + 1))
             except Exception as e:
                 t_name = t_cfg_raw.get('_target', '?').split('.')[-1] if isinstance(t_cfg_raw, dict) else '?'
                 snapshots.append({

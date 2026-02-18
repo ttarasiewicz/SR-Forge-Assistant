@@ -67,7 +67,7 @@
                 implementation="com.github.ttarasiewicz.srforgeassistant.SrForgeEditorNotificationProvider"/>
 
         <toolWindow id="Pipeline Probe"
-                    anchor="bottom"
+                    anchor="right"
                     factoryClass="com.github.ttarasiewicz.srforgeassistant.probe.ProbeToolWindowFactory"
                     icon="/icons/probe.svg"/>
 

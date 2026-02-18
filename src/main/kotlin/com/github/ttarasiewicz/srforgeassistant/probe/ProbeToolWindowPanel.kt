@@ -7,24 +7,26 @@ import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import java.awt.*
+import java.awt.event.MouseAdapter
+import java.awt.event.MouseEvent
 import javax.swing.*
 
 /**
  * Main panel for the Pipeline Probe tool window.
- * Displays a vertical pipeline flow with field snapshots at each step.
+ * Displays a block-based flow diagram with expandable step and field blocks.
  */
 class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()) {
 
     private val contentPanel = JPanel().apply {
         layout = BoxLayout(this, BoxLayout.Y_AXIS)
-        border = JBUI.Borders.empty(8)
+        border = JBUI.Borders.empty(12)
     }
     private val scrollPane = JBScrollPane(contentPanel)
     private val headerLabel = JBLabel("No probe results yet. Run Pipeline Probe from the SR-Forge toolbar.")
 
     init {
         val headerPanel = JPanel(BorderLayout()).apply {
-            border = JBUI.Borders.empty(8)
+            border = JBUI.Borders.empty(8, 12)
             add(headerLabel, BorderLayout.WEST)
         }
         add(headerPanel, BorderLayout.NORTH)
@@ -37,7 +39,7 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
         if (!result.success || result.result == null) {
             displayError(result)
         } else {
-            headerLabel.text = "Probe completed in ${result.executionTimeMs}ms"
+            headerLabel.text = "Pipeline probe completed in ${result.executionTimeMs}ms"
             headerLabel.icon = ProbeIcons.Probe
             displayDatasetResult(result.result)
         }
@@ -45,7 +47,6 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
         contentPanel.revalidate()
         contentPanel.repaint()
 
-        // Scroll to top
         SwingUtilities.invokeLater {
             scrollPane.verticalScrollBar.value = 0
         }
@@ -59,159 +60,285 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
         result: DatasetProbeResult,
         previousSnapshot: EntrySnapshot? = null
     ): EntrySnapshot? {
-        // Show inner (wrapped) dataset first, collecting its last snapshot
         var innerLastSnapshot: EntrySnapshot? = previousSnapshot
         if (result.innerResult != null) {
             innerLastSnapshot = displayDatasetResult(result.innerResult, previousSnapshot)
-            addArrow("Wrapped by ${result.datasetName}")
+            addConnector("Wrapped by ${result.datasetName}")
         }
 
-        // Dataset header
-        addDatasetHeader(result)
+        // Dataset block
+        addDatasetBlock(result)
 
-        // Show snapshots with diffs
+        // Step blocks
         val snapshots = result.snapshots
         for (i in snapshots.indices) {
             val snapshot = snapshots[i]
             val diffs = if (i > 0) {
                 computeDiffs(snapshots[i - 1], snapshot)
             } else if (innerLastSnapshot != null) {
-                // Diff the wrapping dataset's initial state against inner dataset's final state
                 computeDiffs(innerLastSnapshot, snapshot)
             } else {
-                snapshot.fields.map { FieldDiff(it.key, FieldDiffStatus.UNCHANGED, null, it) }
+                snapshot.fields.map { f ->
+                    val childDiffs = f.children?.map { c ->
+                        FieldDiff(c.key, FieldDiffStatus.UNCHANGED, null, c)
+                    }
+                    FieldDiff(f.key, FieldDiffStatus.UNCHANGED, null, f, childDiffs)
+                }
             }
 
-            if (i > 0) {
-                addArrow(null)
-            }
-
-            addSnapshotCard(snapshot, diffs)
+            addConnector(null)
+            addStepBlock(snapshot, diffs)
         }
 
         return snapshots.lastOrNull()
     }
 
-    private fun addDatasetHeader(result: DatasetProbeResult) {
-        val header = JPanel(BorderLayout()).apply {
-            border = JBUI.Borders.empty(4, 8)
-            background = JBColor(Color(0x2196F3), Color(0x1A3A5C))
-            maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(32))
-
-            val label = JBLabel("  ${result.datasetName}").apply {
-                foreground = JBColor(Color.WHITE, Color(0xBBDEFB))
-                font = font.deriveFont(Font.BOLD, font.size + 1f)
-                icon = ProbeIcons.Probe
+    private fun addDatasetBlock(result: DatasetProbeResult) {
+        val block = object : JPanel(BorderLayout()) {
+            override fun paintComponent(g: Graphics) {
+                val g2 = g as Graphics2D
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+                g2.color = background
+                g2.fillRoundRect(0, 0, width, height, JBUI.scale(8), JBUI.scale(8))
             }
-            add(label, BorderLayout.WEST)
-
-            val targetLabel = JBLabel(result.datasetTarget).apply {
-                foreground = JBColor(Color(0xBBDEFB), Color(0x7BAAD4))
-                font = font.deriveFont(font.size - 1f)
-                border = JBUI.Borders.emptyRight(8)
-            }
-            add(targetLabel, BorderLayout.EAST)
+        }.apply {
+            isOpaque = false
+            background = JBColor(Color(0x1976D2), Color(0x1565C0))
+            border = JBUI.Borders.empty(10, 14)
+            maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(48))
+            alignmentX = Component.LEFT_ALIGNMENT
         }
-        header.alignmentX = Component.LEFT_ALIGNMENT
-        contentPanel.add(header)
+
+        val nameLabel = JBLabel(result.datasetName).apply {
+            foreground = Color.WHITE
+            font = font.deriveFont(Font.BOLD, font.size + 2f)
+            icon = ProbeIcons.Probe
+            iconTextGap = JBUI.scale(8)
+        }
+        block.add(nameLabel, BorderLayout.WEST)
+
+        val targetLabel = JBLabel(result.datasetTarget).apply {
+            foreground = JBColor(Color(0xBBDEFB), Color(0x90CAF9))
+            font = font.deriveFont(font.size - 1f)
+        }
+        block.add(targetLabel, BorderLayout.EAST)
+
+        contentPanel.add(block)
     }
 
-    private fun addSnapshotCard(snapshot: EntrySnapshot, diffs: List<FieldDiff>) {
-        val card = JPanel().apply {
+    private fun addStepBlock(snapshot: EntrySnapshot, diffs: List<FieldDiff>) {
+        val block = object : JPanel() {
+            override fun paintComponent(g: Graphics) {
+                val g2 = g as Graphics2D
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+                g2.color = STEP_BLOCK_BG
+                g2.fillRoundRect(0, 0, width, height, JBUI.scale(8), JBUI.scale(8))
+                g2.color = STEP_BLOCK_BORDER
+                g2.drawRoundRect(0, 0, width - 1, height - 1, JBUI.scale(8), JBUI.scale(8))
+            }
+        }.apply {
             layout = BoxLayout(this, BoxLayout.Y_AXIS)
-            border = BorderFactory.createCompoundBorder(
-                BorderFactory.createLineBorder(JBColor.border(), 1),
-                JBUI.Borders.empty(6, 8)
-            )
+            isOpaque = false
+            border = JBUI.Borders.empty(10, 12)
             alignmentX = Component.LEFT_ALIGNMENT
             maximumSize = Dimension(Int.MAX_VALUE, Int.MAX_VALUE)
         }
 
-        // Step label
-        val stepLabel = JBLabel(snapshot.stepLabel).apply {
-            font = font.deriveFont(Font.BOLD)
-            alignmentX = Component.LEFT_ALIGNMENT
-        }
-        card.add(stepLabel)
-        card.add(Box.createVerticalStrut(JBUI.scale(4)))
-
-        if (diffs.isEmpty()) {
-            card.add(JBLabel("(no fields)").apply {
-                foreground = UIUtil.getInactiveTextColor()
-                alignmentX = Component.LEFT_ALIGNMENT
-            })
-        } else {
-            // Field table
-            val fieldPanel = FieldDetailPanel(diffs)
-            fieldPanel.alignmentX = Component.LEFT_ALIGNMENT
-            card.add(fieldPanel)
-        }
-
-        contentPanel.add(card)
-    }
-
-    private fun addArrow(label: String?) {
-        val arrowPanel = JPanel().apply {
+        // Step header with collapse toggle
+        val fieldsPanel = JPanel().apply {
             layout = BoxLayout(this, BoxLayout.Y_AXIS)
             isOpaque = false
             alignmentX = Component.LEFT_ALIGNMENT
-            maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(if (label != null) 36 else 24))
+        }
+
+        val headerRow = JPanel(BorderLayout()).apply {
+            isOpaque = false
+            maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(28))
+            alignmentX = Component.LEFT_ALIGNMENT
+            cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+        }
+
+        val collapseLabel = JBLabel("\u25BE").apply {
+            foreground = UIUtil.getInactiveTextColor()
+            border = JBUI.Borders.emptyRight(6)
+        }
+
+        val stepNameLabel = JBLabel(snapshot.stepLabel).apply {
+            font = font.deriveFont(Font.BOLD, font.size + 1f)
+        }
+
+        val leftHeader = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
+            isOpaque = false
+            add(collapseLabel)
+            add(stepNameLabel)
+        }
+        headerRow.add(leftHeader, BorderLayout.WEST)
+
+        // Summary badges on the right
+        val summaryText = buildSummaryBadges(diffs)
+        if (summaryText.isNotEmpty()) {
+            headerRow.add(JBLabel(summaryText).apply {
+                foreground = UIUtil.getInactiveTextColor()
+                font = font.deriveFont(font.size - 1f)
+                border = JBUI.Borders.emptyRight(4)
+            }, BorderLayout.EAST)
+        }
+
+        headerRow.addMouseListener(object : MouseAdapter() {
+            override fun mouseClicked(e: MouseEvent) {
+                fieldsPanel.isVisible = !fieldsPanel.isVisible
+                collapseLabel.text = if (fieldsPanel.isVisible) "\u25BE" else "\u25B8"
+                block.revalidate()
+                block.repaint()
+            }
+        })
+
+        block.add(headerRow)
+        block.add(Box.createVerticalStrut(JBUI.scale(6)))
+
+        // Field blocks
+        if (diffs.isEmpty()) {
+            fieldsPanel.add(JBLabel("(no fields)").apply {
+                foreground = UIUtil.getInactiveTextColor()
+                alignmentX = Component.LEFT_ALIGNMENT
+                border = JBUI.Borders.emptyLeft(4)
+            })
+        } else {
+            val fieldDetail = FieldDetailPanel(diffs)
+            fieldDetail.alignmentX = Component.LEFT_ALIGNMENT
+            fieldsPanel.add(fieldDetail)
+        }
+
+        fieldsPanel.alignmentX = Component.LEFT_ALIGNMENT
+        block.add(fieldsPanel)
+
+        contentPanel.add(block)
+    }
+
+    private fun addConnector(label: String?) {
+        val connector = JPanel().apply {
+            layout = BoxLayout(this, BoxLayout.X_AXIS)
+            isOpaque = false
+            alignmentX = Component.LEFT_ALIGNMENT
+            maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(28))
             border = JBUI.Borders.empty(2, 0)
         }
 
-        val arrowLabel = JBLabel(if (label != null) "  \u2193  $label" else "  \u2193").apply {
-            foreground = UIUtil.getInactiveTextColor()
-            font = font.deriveFont(font.size - 1f)
-            alignmentX = Component.LEFT_ALIGNMENT
-            border = JBUI.Borders.emptyLeft(16)
+        connector.add(Box.createHorizontalStrut(JBUI.scale(24)))
+
+        // Vertical line + arrow
+        connector.add(object : JComponent() {
+            override fun getPreferredSize() = Dimension(JBUI.scale(20), JBUI.scale(24))
+            override fun getMinimumSize() = preferredSize
+            override fun getMaximumSize() = preferredSize
+            override fun paintComponent(g: Graphics) {
+                val g2 = g as Graphics2D
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+                g2.color = JBColor.border()
+                g2.stroke = BasicStroke(JBUI.scale(2).toFloat())
+                val cx = width / 2
+                // Vertical line
+                g2.drawLine(cx, 0, cx, height - JBUI.scale(6))
+                // Arrowhead
+                val ay = height - JBUI.scale(2)
+                val aw = JBUI.scale(4)
+                g2.fillPolygon(
+                    intArrayOf(cx - aw, cx, cx + aw),
+                    intArrayOf(ay - aw * 2, ay, ay - aw * 2),
+                    3
+                )
+            }
+        })
+
+        if (label != null) {
+            connector.add(Box.createHorizontalStrut(JBUI.scale(4)))
+            connector.add(JBLabel(label).apply {
+                foreground = UIUtil.getInactiveTextColor()
+                font = font.deriveFont(Font.ITALIC, font.size - 1f)
+            })
         }
-        arrowPanel.add(arrowLabel)
-        contentPanel.add(arrowPanel)
+
+        contentPanel.add(connector)
+    }
+
+    private fun buildSummaryBadges(diffs: List<FieldDiff>): String {
+        val added = diffs.count { it.status == FieldDiffStatus.ADDED }
+        val removed = diffs.count { it.status == FieldDiffStatus.REMOVED }
+        val modified = diffs.count { it.status == FieldDiffStatus.MODIFIED }
+        val parts = mutableListOf<String>()
+        if (added > 0) parts.add("+$added")
+        if (removed > 0) parts.add("-$removed")
+        if (modified > 0) parts.add("~$modified")
+        val total = diffs.size
+        parts.add("$total fields")
+        return parts.joinToString("  ")
     }
 
     private fun displayError(result: ProbeExecutionResult) {
         headerLabel.text = "Probe failed"
         headerLabel.icon = UIUtil.getErrorIcon()
 
-        val errorPanel = JPanel().apply {
+        val errorBlock = object : JPanel() {
+            override fun paintComponent(g: Graphics) {
+                val g2 = g as Graphics2D
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+                g2.color = JBColor(Color(0xFFEBEE), Color(0x3B1B1B))
+                g2.fillRoundRect(0, 0, width, height, JBUI.scale(8), JBUI.scale(8))
+                g2.color = JBColor(Color(0xEF9A9A), Color(0xC62828))
+                g2.drawRoundRect(0, 0, width - 1, height - 1, JBUI.scale(8), JBUI.scale(8))
+            }
+        }.apply {
             layout = BoxLayout(this, BoxLayout.Y_AXIS)
-            border = JBUI.Borders.empty(8)
+            isOpaque = false
+            border = JBUI.Borders.empty(12)
             alignmentX = Component.LEFT_ALIGNMENT
         }
 
-        val msgLabel = JBLabel(result.errorMessage ?: "Unknown error").apply {
-            foreground = JBColor.RED
+        errorBlock.add(JBLabel(result.errorMessage ?: "Unknown error").apply {
+            foreground = JBColor(Color(0xC62828), Color(0xEF5350))
             font = font.deriveFont(Font.BOLD)
             alignmentX = Component.LEFT_ALIGNMENT
-        }
-        errorPanel.add(msgLabel)
+        })
 
         if (result.errorTraceback != null) {
-            errorPanel.add(Box.createVerticalStrut(JBUI.scale(8)))
+            errorBlock.add(Box.createVerticalStrut(JBUI.scale(8)))
             val traceArea = JTextArea(result.errorTraceback).apply {
                 isEditable = false
                 font = Font(Font.MONOSPACED, Font.PLAIN, UIUtil.getFontSize(UIUtil.FontSize.SMALL).toInt())
                 foreground = UIUtil.getInactiveTextColor()
-                background = UIUtil.getPanelBackground()
+                background = Color(0, 0, 0, 0)
+                isOpaque = false
                 lineWrap = true
                 wrapStyleWord = true
-                border = JBUI.Borders.empty(4)
             }
             val scrollable = JBScrollPane(traceArea).apply {
                 alignmentX = Component.LEFT_ALIGNMENT
                 maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(200))
                 preferredSize = Dimension(0, JBUI.scale(200))
+                isOpaque = false
+                viewport.isOpaque = false
             }
-            errorPanel.add(scrollable)
+            errorBlock.add(scrollable)
         }
 
-        contentPanel.add(errorPanel)
+        contentPanel.add(errorBlock)
     }
 
     companion object {
+        // Elevated surface for step blocks — white in light theme, slightly lighter in dark
+        private val STEP_BLOCK_BG = JBColor(Color.WHITE, Color(0x3C3F41))
+        private val STEP_BLOCK_BORDER = JBColor(Color(0xD0D0D0), Color(0x555555))
+
         fun computeDiffs(before: EntrySnapshot, after: EntrySnapshot): List<FieldDiff> {
-            val beforeMap = before.fields.associateBy { it.key }
-            val afterMap = after.fields.associateBy { it.key }
+            return computeFieldListDiffs(before.fields, after.fields)
+        }
+
+        fun computeFieldListDiffs(
+            before: List<FieldSnapshot>,
+            after: List<FieldSnapshot>
+        ): List<FieldDiff> {
+            val beforeMap = before.associateBy { it.key }
+            val afterMap = after.associateBy { it.key }
             val allKeys = LinkedHashSet<String>()
             allKeys.addAll(beforeMap.keys)
             allKeys.addAll(afterMap.keys)
@@ -219,14 +346,30 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
             return allKeys.map { key ->
                 val b = beforeMap[key]
                 val a = afterMap[key]
+                val childDiffs = computeChildDiffs(b?.children, a?.children)
                 when {
-                    b == null && a != null -> FieldDiff(key, FieldDiffStatus.ADDED, null, a)
-                    b != null && a == null -> FieldDiff(key, FieldDiffStatus.REMOVED, b, null)
-                    b != null && a != null && fieldChanged(b, a) ->
-                        FieldDiff(key, FieldDiffStatus.MODIFIED, b, a)
-                    else -> FieldDiff(key, FieldDiffStatus.UNCHANGED, b, a)
+                    b == null && a != null ->
+                        FieldDiff(key, FieldDiffStatus.ADDED, null, a, childDiffs)
+                    b != null && a == null ->
+                        FieldDiff(key, FieldDiffStatus.REMOVED, b, null, childDiffs)
+                    b != null && a != null && (fieldChanged(b, a) || hasChildChanges(childDiffs)) ->
+                        FieldDiff(key, FieldDiffStatus.MODIFIED, b, a, childDiffs)
+                    else ->
+                        FieldDiff(key, FieldDiffStatus.UNCHANGED, b, a, childDiffs)
                 }
             }
+        }
+
+        private fun computeChildDiffs(
+            before: List<FieldSnapshot>?,
+            after: List<FieldSnapshot>?
+        ): List<FieldDiff>? {
+            if (before == null && after == null) return null
+            return computeFieldListDiffs(before ?: emptyList(), after ?: emptyList())
+        }
+
+        private fun hasChildChanges(childDiffs: List<FieldDiff>?): Boolean {
+            return childDiffs?.any { it.status != FieldDiffStatus.UNCHANGED } == true
         }
 
         private fun fieldChanged(b: FieldSnapshot, a: FieldSnapshot): Boolean {
@@ -235,6 +378,8 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
                     b.dtype != a.dtype ||
                     b.minValue != a.minValue ||
                     b.maxValue != a.maxValue ||
+                    b.meanValue != a.meanValue ||
+                    b.stdValue != a.stdValue ||
                     b.sizeBytes != a.sizeBytes ||
                     b.preview != a.preview
         }

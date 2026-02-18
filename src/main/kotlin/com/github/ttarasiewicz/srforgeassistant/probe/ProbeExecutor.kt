@@ -112,7 +112,6 @@ object ProbeExecutor {
     }
 
     private fun parseDatasetProbeResult(obj: JsonObject): DatasetProbeResult {
-        val gson = Gson()
         val datasetName = obj.get("datasetName")?.asString ?: "Unknown"
         val datasetTarget = obj.get("datasetTarget")?.asString ?: ""
 
@@ -120,21 +119,8 @@ object ProbeExecutor {
         val snapshotsArr = obj.getAsJsonArray("snapshots") ?: com.google.gson.JsonArray()
         for (elem in snapshotsArr) {
             val snap = elem.asJsonObject
-            val fields = mutableListOf<FieldSnapshot>()
             val fieldsArr = snap.getAsJsonArray("fields") ?: com.google.gson.JsonArray()
-            for (f in fieldsArr) {
-                val fo = f.asJsonObject
-                fields.add(FieldSnapshot(
-                    key = fo.get("key")?.asString ?: "",
-                    pythonType = fo.get("pythonType")?.asString ?: "unknown",
-                    shape = fo.get("shape")?.takeIf { !it.isJsonNull }?.asString,
-                    dtype = fo.get("dtype")?.takeIf { !it.isJsonNull }?.asString,
-                    minValue = fo.get("minValue")?.takeIf { !it.isJsonNull }?.asString,
-                    maxValue = fo.get("maxValue")?.takeIf { !it.isJsonNull }?.asString,
-                    preview = fo.get("preview")?.takeIf { !it.isJsonNull }?.asString,
-                    sizeBytes = fo.get("sizeBytes")?.takeIf { !it.isJsonNull }?.asLong
-                ))
-            }
+            val fields = fieldsArr.map { parseFieldSnapshot(it.asJsonObject) }
             snapshots.add(EntrySnapshot(
                 stepLabel = snap.get("stepLabel")?.asString ?: "",
                 stepIndex = snap.get("stepIndex")?.asInt ?: 0,
@@ -148,6 +134,26 @@ object ProbeExecutor {
         } else null
 
         return DatasetProbeResult(datasetName, datasetTarget, snapshots, innerResult)
+    }
+
+    private fun parseFieldSnapshot(fo: JsonObject): FieldSnapshot {
+        val children = if (fo.has("children") && !fo.get("children").isJsonNull) {
+            fo.getAsJsonArray("children").map { parseFieldSnapshot(it.asJsonObject) }
+        } else null
+
+        return FieldSnapshot(
+            key = fo.get("key")?.asString ?: "",
+            pythonType = fo.get("pythonType")?.asString ?: "unknown",
+            shape = fo.get("shape")?.takeIf { !it.isJsonNull }?.asString,
+            dtype = fo.get("dtype")?.takeIf { !it.isJsonNull }?.asString,
+            minValue = fo.get("minValue")?.takeIf { !it.isJsonNull }?.asString,
+            maxValue = fo.get("maxValue")?.takeIf { !it.isJsonNull }?.asString,
+            meanValue = fo.get("meanValue")?.takeIf { !it.isJsonNull }?.asString,
+            stdValue = fo.get("stdValue")?.takeIf { !it.isJsonNull }?.asString,
+            preview = fo.get("preview")?.takeIf { !it.isJsonNull }?.asString,
+            sizeBytes = fo.get("sizeBytes")?.takeIf { !it.isJsonNull }?.asLong,
+            children = children
+        )
     }
 
     private fun errorResult(message: String, traceback: String? = null) = ProbeExecutionResult(

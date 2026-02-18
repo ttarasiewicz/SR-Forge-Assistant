@@ -10,8 +10,11 @@ data class FieldSnapshot(
     val dtype: String?,
     val minValue: String?,
     val maxValue: String?,
+    val meanValue: String?,
+    val stdValue: String?,
     val preview: String?,
-    val sizeBytes: Long?
+    val sizeBytes: Long?,
+    val children: List<FieldSnapshot>? = null
 )
 
 /**
@@ -32,7 +35,8 @@ data class FieldDiff(
     val key: String,
     val status: FieldDiffStatus,
     val before: FieldSnapshot?,
-    val after: FieldSnapshot?
+    val after: FieldSnapshot?,
+    val childDiffs: List<FieldDiff>? = null
 )
 
 /**
