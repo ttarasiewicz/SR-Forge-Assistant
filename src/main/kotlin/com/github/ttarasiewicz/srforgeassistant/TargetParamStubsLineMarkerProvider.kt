@@ -19,6 +19,7 @@ class TargetParamStubsLineMarkerProvider : LineMarkerProvider {
     override fun getLineMarkerInfo(element: PsiElement): LineMarkerInfo<*>? {
         // Only match on the leaf key text of a _target: key-value.
         // LineMarkerProvider contract: element must be a leaf.
+        if (!SrForgeHighlightSettings.getInstance().state.paramStubsEnabled) return null
         if (element.firstChild != null) return null
         if (DumbService.isDumb(element.project)) return null
 

@@ -36,6 +36,7 @@ class YamlTargetCompletionProvider : CompletionProvider<CompletionParameters>() 
         context: ProcessingContext,
         result: CompletionResultSet
     ) {
+        if (!SrForgeHighlightSettings.getInstance().state.targetCompletionEnabled) return
         val project = parameters.editor.project ?: return
         if (DumbService.isDumb(project)) return
 

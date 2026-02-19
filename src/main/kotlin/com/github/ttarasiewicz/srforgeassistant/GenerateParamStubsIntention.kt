@@ -19,6 +19,7 @@ class GenerateParamStubsIntention : IntentionAction {
     override fun startInWriteAction(): Boolean = true
 
     override fun isAvailable(project: Project, editor: Editor?, file: PsiFile?): Boolean {
+        if (!SrForgeHighlightSettings.getInstance().state.paramStubsEnabled) return false
         if (file == null || editor == null) return false
         if (DumbService.isDumb(project)) return false
         return try {

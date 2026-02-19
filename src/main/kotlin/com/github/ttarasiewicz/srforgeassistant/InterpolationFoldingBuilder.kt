@@ -22,6 +22,7 @@ class InterpolationFoldingBuilder : FoldingBuilderEx() {
         document: Document,
         quick: Boolean
     ): Array<FoldingDescriptor> {
+        if (!SrForgeHighlightSettings.getInstance().state.interpolationFoldingEnabled) return FoldingDescriptor.EMPTY_ARRAY
         val vFile = root.containingFile?.virtualFile ?: return FoldingDescriptor.EMPTY_ARRAY
         val name = vFile.name
         if (!name.endsWith(".yaml") && !name.endsWith(".yml")) return FoldingDescriptor.EMPTY_ARRAY

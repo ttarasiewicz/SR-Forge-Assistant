@@ -21,6 +21,7 @@ import com.intellij.util.ProcessingContext
 class YamlInterpolationCompletionContributor : CompletionContributor() {
 
     override fun fillCompletionVariants(parameters: CompletionParameters, result: CompletionResultSet) {
+        if (!SrForgeHighlightSettings.getInstance().state.interpolationCompletionEnabled) return
         if (parameters.completionType != CompletionType.BASIC) return
 
         val vFile = parameters.originalFile.viewProvider.virtualFile

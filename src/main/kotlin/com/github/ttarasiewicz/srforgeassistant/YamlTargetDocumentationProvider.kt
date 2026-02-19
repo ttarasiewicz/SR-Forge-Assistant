@@ -12,6 +12,7 @@ import org.jetbrains.yaml.psi.YAMLMapping
 class YamlTargetDocumentationProvider : DocumentationTargetProvider {
 
     override fun documentationTargets(file: PsiFile, offset: Int): List<DocumentationTarget> {
+        if (!SrForgeHighlightSettings.getInstance().state.targetDocumentationEnabled) return emptyList()
         if (DumbService.isDumb(file.project)) return emptyList()
 
         val leaf = file.findElementAt(offset) ?: return emptyList()

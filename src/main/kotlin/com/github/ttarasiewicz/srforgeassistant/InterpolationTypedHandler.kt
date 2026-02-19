@@ -15,6 +15,7 @@ import com.intellij.psi.PsiFile
 class InterpolationTypedHandler : TypedHandlerDelegate() {
 
     override fun charTyped(c: Char, project: Project, editor: Editor, file: PsiFile): Result {
+        if (!SrForgeHighlightSettings.getInstance().state.interpolationCompletionEnabled) return Result.CONTINUE
         val name = file.virtualFile?.name ?: return Result.CONTINUE
         if (!name.endsWith(".yaml") && !name.endsWith(".yml")) return Result.CONTINUE
 

@@ -14,6 +14,7 @@ import com.intellij.psi.PsiFile
 class TargetDotTypedHandler : TypedHandlerDelegate() {
 
     override fun charTyped(c: Char, project: Project, editor: Editor, file: PsiFile): Result {
+        if (!SrForgeHighlightSettings.getInstance().state.targetCompletionEnabled) return Result.CONTINUE
         if (c != '.') return Result.CONTINUE
 
         val offset = editor.caretModel.offset

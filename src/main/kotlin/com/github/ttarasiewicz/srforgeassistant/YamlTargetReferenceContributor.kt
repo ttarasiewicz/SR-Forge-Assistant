@@ -12,6 +12,7 @@ class YamlTargetReferenceContributor : PsiReferenceContributor() {
 
         registrar.registerReferenceProvider(pattern, object : PsiReferenceProvider() {
             override fun getReferencesByElement(element: PsiElement, context: ProcessingContext): Array<PsiReference> {
+                if (!SrForgeHighlightSettings.getInstance().state.targetNavigationEnabled) return PsiReference.EMPTY_ARRAY
                 if (!TargetUtils.isTargetValue(element)) return PsiReference.EMPTY_ARRAY
                 return arrayOf(TargetClassReference(element as YAMLScalar))
             }

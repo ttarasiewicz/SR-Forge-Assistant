@@ -16,6 +16,14 @@ import java.awt.Color
 class SrForgeHighlightSettings : PersistentStateComponent<SrForgeHighlightSettings.SettingsState> {
 
     data class SettingsState(
+        // Feature toggles
+        var targetCompletionEnabled: Boolean = true,
+        var targetNavigationEnabled: Boolean = true,
+        var targetDocumentationEnabled: Boolean = true,
+        var interpolationCompletionEnabled: Boolean = true,
+        var interpolationFoldingEnabled: Boolean = true,
+        var paramStubsEnabled: Boolean = true,
+
         // Scope highlighting
         var blockEnabled: Boolean = true,
         var parentKeyEnabled: Boolean = true,
