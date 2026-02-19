@@ -44,11 +44,18 @@ class SrForgeEditorNotificationProvider : EditorNotificationProvider {
             val probeAction = ActionManager.getInstance()
                 .getAction("SrForgeAssistant.PipelineProbe")
 
+            val settingsAction = ActionManager.getInstance()
+                .getAction("SrForgeAssistant.OpenSettings")
+
             val group = DefaultActionGroup().apply {
                 add(toggleAction)
                 if (probeAction != null) {
                     addSeparator()
                     add(probeAction)
+                }
+                if (settingsAction != null) {
+                    addSeparator()
+                    add(settingsAction)
                 }
             }
 

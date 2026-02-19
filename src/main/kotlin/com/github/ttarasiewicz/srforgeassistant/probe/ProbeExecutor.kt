@@ -8,6 +8,7 @@ import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.projectRoots.Sdk
 import com.intellij.openapi.roots.ProjectRootManager
+import com.github.ttarasiewicz.srforgeassistant.SrForgeHighlightSettings
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 
@@ -17,7 +18,8 @@ import java.nio.file.Files
  */
 object ProbeExecutor {
 
-    private const val TIMEOUT_MS = 120_000
+    private val TIMEOUT_MS: Int
+        get() = SrForgeHighlightSettings.getInstance().state.probeTimeoutSeconds * 1000
     private const val RESULT_BEGIN = "===PROBE_RESULT_BEGIN==="
     private const val RESULT_END = "===PROBE_RESULT_END==="
 

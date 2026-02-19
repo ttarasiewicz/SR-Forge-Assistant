@@ -36,7 +36,8 @@ class InterpolationFoldCaretListener : CaretListener {
         editor.putUserData(WAS_INSIDE_KEY, isInside)
         editor.putUserData(PREV_OFFSET_KEY, offset)
 
-        if (wasInside && !isInside && prevOffset >= 0) {
+        if (wasInside && !isInside && prevOffset >= 0
+            && SrForgeHighlightSettings.getInstance().state.autoCollapseOnCaretExit) {
             collapseInterpolationAt(editor, text, prevOffset)
         }
     }

@@ -33,6 +33,7 @@ class InterpolationFoldingBuilder : FoldingBuilderEx() {
         // caused by YAML parser interpreting ${ as flow mapping syntax
         val fileNode = root.node ?: return FoldingDescriptor.EMPTY_ARRAY
 
+        val maxLen = SrForgeHighlightSettings.getInstance().state.foldPlaceholderMaxLength
         val descriptors = ArrayList<FoldingDescriptor>()
 
         for (match in INTERPOLATION_REGEX.findAll(text)) {
@@ -42,11 +43,13 @@ class InterpolationFoldingBuilder : FoldingBuilderEx() {
             val resolved = YamlInterpolationCompletionContributor.resolveValueFromText(text, path)
                 ?: continue
 
+            val truncated = if (resolved.length > maxLen) resolved.take(maxLen) + "..." else resolved
+
             val range = TextRange(match.range.first, match.range.last + 1)
             if (!fileNode.textRange.contains(range)) continue
 
             // No FoldingGroup — each interpolation fold is independent
-            descriptors.add(FoldingDescriptor(fileNode, range, null, resolved))
+            descriptors.add(FoldingDescriptor(fileNode, range, null, truncated))
         }
 
         return descriptors.toTypedArray()
@@ -54,7 +57,8 @@ class InterpolationFoldingBuilder : FoldingBuilderEx() {
 
     override fun getPlaceholderText(node: ASTNode): String = "..."
 
-    override fun isCollapsedByDefault(node: ASTNode): Boolean = true
+    override fun isCollapsedByDefault(node: ASTNode): Boolean =
+        SrForgeHighlightSettings.getInstance().state.foldOnFileOpen
 
     companion object {
         private val INTERPOLATION_REGEX = Regex("""[$%]\{([^}]+)}""")

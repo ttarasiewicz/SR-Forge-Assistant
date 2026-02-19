@@ -74,6 +74,14 @@
                     factoryClass="com.github.ttarasiewicz.srforgeassistant.probe.ProbeToolWindowFactory"
                     icon="/icons/probe.svg"/>
 
+        <applicationService
+                serviceImplementation="com.github.ttarasiewicz.srforgeassistant.SrForgeHighlightSettings"/>
+        <applicationConfigurable
+                parentId="tools"
+                instance="com.github.ttarasiewicz.srforgeassistant.SrForgeSettingsConfigurable"
+                id="SrForgeAssistant.Settings"
+                displayName="SR-Forge Assistant"/>
+
         <notificationGroup id="SR-Forge Assistant"
                            displayType="BALLOON"/>
     </extensions>
@@ -93,5 +101,11 @@
                 text="Run Pipeline Probe"
                 icon="/icons/probe.svg"
                 description="Probe dataset pipeline and visualize data flow"/>
+
+        <action id="SrForgeAssistant.OpenSettings"
+                class="com.github.ttarasiewicz.srforgeassistant.OpenSrForgeSettingsAction"
+                text="SR-Forge Settings"
+                icon="AllIcons.General.GearPlain"
+                description="Open SR-Forge Assistant highlight settings"/>
     </actions>
 </idea-plugin>
