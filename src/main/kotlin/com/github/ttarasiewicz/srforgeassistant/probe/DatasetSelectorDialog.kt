@@ -26,6 +26,7 @@ class DatasetSelectorDialog(
 
     private val datasetCombo = ComboBox<String>()
     private val overridePanel = JPanel(GridBagLayout())
+    private var overrideScrollPane: JScrollPane? = null
     private val overrideFields = mutableMapOf<String, TextFieldWithBrowseButton>()
     private val overwriteCheckbox = JCheckBox("Save path changes to YAML file")
 
@@ -67,10 +68,10 @@ class DatasetSelectorDialog(
                 "Data Paths"
             )
         }
-        val scrollPane = JScrollPane(overridePanel).apply {
+        overrideScrollPane = JScrollPane(overridePanel).apply {
             border = JBUI.Borders.empty()
         }
-        overrideWrapper.add(scrollPane, BorderLayout.CENTER)
+        overrideWrapper.add(overrideScrollPane, BorderLayout.CENTER)
         panel.add(overrideWrapper, BorderLayout.CENTER)
 
         // Overwrite checkbox at the bottom
@@ -139,6 +140,8 @@ class DatasetSelectorDialog(
 
         overridePanel.revalidate()
         overridePanel.repaint()
+        overrideScrollPane?.revalidate()
+        overrideScrollPane?.repaint()
     }
 
     /**

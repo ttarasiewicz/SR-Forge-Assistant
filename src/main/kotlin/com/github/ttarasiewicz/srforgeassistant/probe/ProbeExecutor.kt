@@ -125,7 +125,9 @@ object ProbeExecutor {
                 stepLabel = snap.get("stepLabel")?.asString ?: "",
                 stepIndex = snap.get("stepIndex")?.asInt ?: 0,
                 fields = fields,
-                isBatched = snap.get("isBatched")?.asBoolean ?: false
+                isBatched = snap.get("isBatched")?.asBoolean ?: false,
+                errorMessage = snap.get("errorMessage")?.takeIf { !it.isJsonNull }?.asString,
+                errorTraceback = snap.get("errorTraceback")?.takeIf { !it.isJsonNull }?.asString
             ))
         }
 

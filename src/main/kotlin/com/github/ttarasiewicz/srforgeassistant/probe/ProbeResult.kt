@@ -24,7 +24,9 @@ data class EntrySnapshot(
     val stepLabel: String,
     val stepIndex: Int,
     val fields: List<FieldSnapshot>,
-    val isBatched: Boolean
+    val isBatched: Boolean,
+    val errorMessage: String? = null,
+    val errorTraceback: String? = null
 )
 
 enum class FieldDiffStatus {

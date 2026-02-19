@@ -293,10 +293,27 @@ def _probe_node(parser, node, path):
                     inner_result = {
                         'datasetName': str(child._target).split('.')[-1],
                         'datasetTarget': str(child._target),
-                        'snapshots': [{'stepLabel': f'ERROR: {e}', 'stepIndex': 0, 'fields': [], 'isBatched': False}],
+                        'snapshots': [{
+                            'stepLabel': str(child._target).split('.')[-1],
+                            'stepIndex': 0, 'fields': [], 'isBatched': False,
+                            'errorMessage': str(e),
+                            'errorTraceback': traceback.format_exc(),
+                        }],
                         'innerResult': None,
                     }
                 break
+
+    # If inner dataset had errors, don't probe the outer — data wouldn't reach it
+    if inner_result is not None:
+        _has_err = any(s.get('errorMessage') for s in inner_result.get('snapshots', []))
+        if _has_err:
+            target_name = str(node._target).split('.')[-1]
+            return {
+                'datasetName': target_name,
+                'datasetTarget': str(node._target),
+                'snapshots': [],
+                'innerResult': inner_result,
+            }
 
     # Collect transforms config BEFORE stripping them
     transforms_raw = None
@@ -319,11 +336,13 @@ def _probe_node(parser, node, path):
     # Strip transforms and neutralize cache before instantiation
     with open_dict(node):
         saved_transforms = None
+        saved_transforms_location = None
         saved_cache = {}
         if 'params' in node and node.params is not None:
             # Strip transforms so __getitem__ doesn't auto-apply them
             if 'transforms' in node.params:
                 saved_transforms = node.params.transforms
+                saved_transforms_location = 'params'
                 node.params.transforms = None
             # Neutralize cache: never delete or write to cache dirs
             if 'cache_dir' in node.params:
@@ -332,8 +351,9 @@ def _probe_node(parser, node, path):
             if 'recache' in node.params:
                 saved_cache['recache'] = node.params.recache
                 node.params.recache = False
-        elif 'transforms' in node:
+        if saved_transforms is None and 'transforms' in node:
             saved_transforms = node.transforms
+            saved_transforms_location = 'node'
             node.transforms = None
 
     # Instantiate dataset using ConfigParser (same path as SR-Forge)
@@ -342,13 +362,14 @@ def _probe_node(parser, node, path):
 
     # Restore original config values
     with open_dict(node):
-        if 'params' in node and node.params is not None:
-            if saved_transforms is not None:
+        if saved_transforms is not None:
+            if saved_transforms_location == 'params':
                 node.params.transforms = saved_transforms
+            else:
+                node.transforms = saved_transforms
+        if 'params' in node and node.params is not None:
             for k, v in saved_cache.items():
                 node.params[k] = v
-        elif saved_transforms is not None:
-            node.transforms = saved_transforms
 
     # Get first entry (without transforms since we stripped them)
     entry = dataset[0]
@@ -367,10 +388,12 @@ def _probe_node(parser, node, path):
                 snapshots.append(_snapshot_entry(entry, t_name, i + 1))
             except Exception as e:
                 snapshots.append({
-                    'stepLabel': f'ERROR at {t_name}: {e}',
+                    'stepLabel': t_name,
                     'stepIndex': i + 1,
                     'fields': [],
                     'isBatched': False,
+                    'errorMessage': str(e),
+                    'errorTraceback': traceback.format_exc(),
                 })
                 break
     elif transforms_raw is not None:
@@ -386,10 +409,12 @@ def _probe_node(parser, node, path):
             except Exception as e:
                 t_name = t_cfg_raw.get('_target', '?').split('.')[-1] if isinstance(t_cfg_raw, dict) else '?'
                 snapshots.append({
-                    'stepLabel': f'ERROR at {t_name}: {e}',
+                    'stepLabel': t_name,
                     'stepIndex': i + 1,
                     'fields': [],
                     'isBatched': False,
+                    'errorMessage': str(e),
+                    'errorTraceback': traceback.format_exc(),
                 })
                 break
 

@@ -71,13 +71,21 @@ class PipelineProbeAction : AnAction(
         val yamlFilePath = psiFile.virtualFile?.path ?: return
         val projectPaths = ProbeExecutor.getProjectSourcePaths(project)
 
-        // Generate probe script
-        val script = ProbeScriptGenerator.generate(
+        val config = ProbeRunConfig(
             yamlFilePath = yamlFilePath,
             datasetPath = selectedPath,
             pipeline = selectedNode,
             pathOverrides = pathOverrides,
             projectPaths = projectPaths
+        )
+
+        // Generate probe script
+        val script = ProbeScriptGenerator.generate(
+            yamlFilePath = config.yamlFilePath,
+            datasetPath = config.datasetPath,
+            pipeline = config.pipeline,
+            pathOverrides = config.pathOverrides,
+            projectPaths = config.projectPaths
         )
 
         // Run in background
@@ -94,7 +102,7 @@ class PipelineProbeAction : AnAction(
                         toolWindow.activate {
                             val content = toolWindow.contentManager.getContent(0)
                             val panel = content?.component as? ProbeToolWindowPanel
-                            panel?.displayResult(result)
+                            panel?.displayResult(result, config)
                         }
                     }
                 }
