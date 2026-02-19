@@ -62,6 +62,9 @@
 
         <postStartupActivity
                 implementation="com.github.ttarasiewicz.srforgeassistant.InterpolationFoldStartup"/>
+        <postStartupActivity
+                implementation="com.github.ttarasiewicz.srforgeassistant.ScopeHighlightStartup"/>
+
 
         <editorNotificationProvider
                 implementation="com.github.ttarasiewicz.srforgeassistant.SrForgeEditorNotificationProvider"/>
