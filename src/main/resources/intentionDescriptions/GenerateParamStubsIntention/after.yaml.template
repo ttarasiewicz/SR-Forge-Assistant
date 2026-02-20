@@ -1,0 +1,5 @@
+model:
+  _target: mypackage.MyModel
+  params:
+    learning_rate: ???
+    hidden_size: ???

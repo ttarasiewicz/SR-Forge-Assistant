@@ -1,0 +1,2 @@
+model:
+  _target: mypackage.MyModel

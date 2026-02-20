@@ -1,34 +1,127 @@
-<!-- Plugin Configuration File. Read more: https://plugins.jetbrains.com/docs/intellij/plugin-configuration-file.html -->
 <idea-plugin>
     <id>com.github.ttarasiewicz.srforgeassistant</id>
     <name>SR-Forge-Assistant</name>
     <vendor>ttarasiewicz</vendor>
 
+    <description><![CDATA[
+    Intelligent coding assistant for <a href="https://gitlab.com">SR-Forge</a> ML framework YAML configuration files in PyCharm.
+
+    <h3>Features</h3>
+    <ul>
+        <li><b>_target_ completion</b> &mdash; auto-complete Python class FQNs in <code>_target_:</code> fields with dot-triggered popup</li>
+        <li><b>Go-to-definition</b> &mdash; Ctrl+Click on <code>_target_:</code> values to navigate to the Python class</li>
+        <li><b>Hover documentation</b> &mdash; quick docs for <code>_target_:</code> classes showing signature and docstring</li>
+        <li><b>Interpolation completion</b> &mdash; auto-complete <code>${path.to.key}</code> interpolation references</li>
+        <li><b>Interpolation folding</b> &mdash; fold interpolation expressions to their resolved values</li>
+        <li><b>Parameter stub generation</b> &mdash; generate constructor parameter stubs for <code>_target_:</code> classes</li>
+        <li><b>Parameter inspections</b> &mdash; warnings for missing required params and unknown param names</li>
+        <li><b>Scope highlighting</b> &mdash; highlight the current <code>_target_:</code> block and parent key</li>
+        <li><b>Pipeline Probe</b> &mdash; visualize dataset pipeline data flow and field snapshots</li>
+    </ul>
+    ]]></description>
+
+    <!-- Platform/module dependencies -->
     <depends>com.intellij.modules.platform</depends>
-    <depends>com.intellij.modules.python</depends>
-<!--    <depends>com.intellij.modules.python-core-capable</depends>-->
+    <!-- Python module present in PyCharm & IDEA with Python plugin -->
+    <depends>Pythonid</depends>
+    <!-- YAML language plugin -->
     <depends>org.jetbrains.plugins.yaml</depends>
 
-    <resource-bundle>messages.MyBundle</resource-bundle>
+    <extensions defaultExtensionNs="com.intellij.platform.backend.documentation">
+        <targetProvider implementation="com.github.ttarasiewicz.srforgeassistant.YamlTargetDocumentationProvider"/>
+        <linkHandler implementation="com.github.ttarasiewicz.srforgeassistant.PyClassDocLinkHandler"/>
+    </extensions>
 
     <extensions defaultExtensionNs="com.intellij">
-        <completion.contributor language="yaml" implementationClass="com.github.ttarasiewicz.srforgeassistant.yaml.YamlTargetCompletionContributor"/>
-        <psi.referenceContributor language="yaml" implementation="com.github.ttarasiewicz.srforgeassistant.yaml.YamlTargetReferenceContributor"/>
-        <annotator language="yaml" implementationClass="com.github.ttarasiewicz.srforgeassistant.yaml.YamlTargetAnnotator"/>
-        <psi.treeChangeListener implementation="com.github.ttarasiewicz.srforgeassistant.yaml.targetParamsCompletion.YamlTargetPsiListener"/>
-        <projectConfigurable
+        <completion.contributor
+                language="yaml"
+                implementationClass="com.github.ttarasiewicz.srforgeassistant.YamlTargetCompletionContributor"/>
+        <psi.referenceContributor
+                language="yaml"
+                implementation="com.github.ttarasiewicz.srforgeassistant.YamlTargetReferenceContributor"/>
+        <completion.contributor
+                language="yaml"
+                implementationClass="com.github.ttarasiewicz.srforgeassistant.YamlInterpolationCompletionContributor"/>
+        <typedHandler
+                implementation="com.github.ttarasiewicz.srforgeassistant.TargetDotTypedHandler"/>
+        <typedHandler
+                implementation="com.github.ttarasiewicz.srforgeassistant.InterpolationTypedHandler"/>
+
+        <lang.foldingBuilder
+                language="yaml"
+                implementationClass="com.github.ttarasiewicz.srforgeassistant.InterpolationFoldingBuilder"/>
+
+        <codeInsight.lineMarkerProvider
+                language="yaml"
+                implementationClass="com.github.ttarasiewicz.srforgeassistant.TargetParamStubsLineMarkerProvider"/>
+
+        <intentionAction>
+            <language>yaml</language>
+            <className>com.github.ttarasiewicz.srforgeassistant.GenerateParamStubsIntention</className>
+            <category>YAML</category>
+        </intentionAction>
+
+        <localInspection
+                language="yaml"
+                groupName="SR-Forge Assistant"
+                displayName="Missing required parameters in params"
+                implementationClass="com.github.ttarasiewicz.srforgeassistant.MissingRequiredParamsInspection"
+                enabledByDefault="true"
+                level="WARNING"/>
+        <localInspection
+                language="yaml"
+                groupName="SR-Forge Assistant"
+                displayName="Unknown parameter name in params"
+                implementationClass="com.github.ttarasiewicz.srforgeassistant.UnknownParamNameInspection"
+                enabledByDefault="true"
+                level="WARNING"/>
+
+        <postStartupActivity
+                implementation="com.github.ttarasiewicz.srforgeassistant.InterpolationFoldStartup"/>
+        <postStartupActivity
+                implementation="com.github.ttarasiewicz.srforgeassistant.ScopeHighlightStartup"/>
+
+
+        <editorNotificationProvider
+                implementation="com.github.ttarasiewicz.srforgeassistant.SrForgeEditorNotificationProvider"/>
+
+        <toolWindow id="Pipeline Probe"
+                    anchor="right"
+                    factoryClass="com.github.ttarasiewicz.srforgeassistant.probe.ProbeToolWindowFactory"
+                    icon="/icons/probe.svg"/>
+
+        <applicationService
+                serviceImplementation="com.github.ttarasiewicz.srforgeassistant.SrForgeHighlightSettings"/>
+        <applicationConfigurable
                 parentId="tools"
-                instance="com.github.ttarasiewicz.srforgeassistant.settings.MyPluginSettingsConfigurable"
-                id="com.github.ttarasiewicz.srforgeassistant.settings.MyPluginSettingsConfigurable"
-                nonDefaultProject="true"
-                displayName="SR-Forge Assistant Settings"/>
-        <codeInsight.lineMarkerProvider language="yaml" implementationClass="com.github.ttarasiewicz.srforgeassistant.yaml.YamlParamLineMarkerProvider"/>
-<!--        <editorFactoryListener implementation="com.github.ttarasiewicz.srforgeassistant.yaml.YamlEditorFactoryListener" />-->
-<!--        <intentionAction>-->
-<!--            <language>yaml</language>-->
-<!--            <className>com.github.ttarasiewicz.srforgeassistant.yaml.targetParamsCompletion.InsertParamsIntention</className>-->
-<!--            <category>Insert</category>-->
-<!--        </intentionAction>-->
-<!--        <initProjectActivity implementation="com.github.ttarasiewicz.srforgeassistant.yaml.MyStartupActivity"/>-->
+                instance="com.github.ttarasiewicz.srforgeassistant.SrForgeSettingsConfigurable"
+                id="SrForgeAssistant.Settings"
+                displayName="SR-Forge Assistant"/>
+
+        <notificationGroup id="SR-Forge Assistant"
+                           displayType="BALLOON"/>
     </extensions>
+
+    <actions>
+        <action id="SrForgeAssistant.ToggleInterpolationFolds"
+                class="com.github.ttarasiewicz.srforgeassistant.ToggleInterpolationFoldsAction"
+                text="Toggle Interpolation Folds"
+                icon="AllIcons.Actions.Collapseall"
+                description="Fold or unfold all interpolation expressions in the current YAML file">
+            <add-to-group group-id="FoldingGroup" anchor="last"/>
+            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+        </action>
+
+        <action id="SrForgeAssistant.PipelineProbe"
+                class="com.github.ttarasiewicz.srforgeassistant.probe.PipelineProbeAction"
+                text="Run Pipeline Probe"
+                icon="/icons/probe.svg"
+                description="Probe dataset pipeline and visualize data flow"/>
+
+        <action id="SrForgeAssistant.OpenSettings"
+                class="com.github.ttarasiewicz.srforgeassistant.OpenSrForgeSettingsAction"
+                text="SR-Forge Settings"
+                icon="AllIcons.General.GearPlain"
+                description="Open SR-Forge Assistant highlight settings"/>
+    </actions>
 </idea-plugin>
