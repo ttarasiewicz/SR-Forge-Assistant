@@ -1,8 +1,24 @@
-.gradle
-.idea
-.intellijPlatform
-.qodana
-build
-/.claude/
-/.kotlin/
-/.idea/
+# Gradle
+.gradle/
+build/
+
+# IntelliJ / IDE
+.idea/
+.run/
+*.iml
+
+# IntelliJ Platform Plugin
+.intellijPlatform/
+
+# Qodana
+.qodana/
+
+# Kotlin
+.kotlin/
+
+# Claude Code
+.claude/
+
+# OS files
+Thumbs.db
+.DS_Store
