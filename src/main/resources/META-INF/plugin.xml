@@ -3,6 +3,22 @@
     <name>SR-Forge-Assistant</name>
     <vendor>ttarasiewicz</vendor>
 
+    <description><![CDATA[
+    Intelligent coding assistant for <a href="https://gitlab.com">SR-Forge</a> ML framework YAML configuration files in PyCharm.
+
+    <h3>Features</h3>
+    <ul>
+        <li><b>_target_ completion</b> &mdash; auto-complete Python class FQNs in <code>_target_:</code> fields with dot-triggered popup</li>
+        <li><b>Go-to-definition</b> &mdash; Ctrl+Click on <code>_target_:</code> values to navigate to the Python class</li>
+        <li><b>Hover documentation</b> &mdash; quick docs for <code>_target_:</code> classes showing signature and docstring</li>
+        <li><b>Interpolation completion</b> &mdash; auto-complete <code>${path.to.key}</code> interpolation references</li>
+        <li><b>Interpolation folding</b> &mdash; fold interpolation expressions to their resolved values</li>
+        <li><b>Parameter stub generation</b> &mdash; generate constructor parameter stubs for <code>_target_:</code> classes</li>
+        <li><b>Parameter inspections</b> &mdash; warnings for missing required params and unknown param names</li>
+        <li><b>Scope highlighting</b> &mdash; highlight the current <code>_target_:</code> block and parent key</li>
+        <li><b>Pipeline Probe</b> &mdash; visualize dataset pipeline data flow and field snapshots</li>
+    </ul>
+    ]]></description>
 
     <!-- Platform/module dependencies -->
     <depends>com.intellij.modules.platform</depends>
