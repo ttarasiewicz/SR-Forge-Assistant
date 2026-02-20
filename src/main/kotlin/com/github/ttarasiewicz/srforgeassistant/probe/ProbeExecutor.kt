@@ -13,7 +13,7 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 
 /**
- * Runs the generated Python probe script using the project's Python interpreter
+ * Runs the Python probe script using the project's Python interpreter
  * and parses the JSON output.
  */
 object ProbeExecutor {
@@ -40,6 +40,7 @@ object ProbeExecutor {
     fun execute(
         project: Project,
         scriptContent: String,
+        configJson: String,
         indicator: ProgressIndicator?
     ): ProbeExecutionResult {
         val sdk = getPythonSdk(project)
@@ -47,11 +48,13 @@ object ProbeExecutor {
         val pythonPath = getPythonPath(sdk)
             ?: return errorResult("Cannot determine Python interpreter path")
 
-        val tempFile = Files.createTempFile("srforge_probe_", ".py").toFile()
+        val scriptFile = Files.createTempFile("srforge_probe_", ".py").toFile()
+        val configFile = Files.createTempFile("srforge_probe_cfg_", ".json").toFile()
         try {
-            tempFile.writeText(scriptContent, StandardCharsets.UTF_8)
+            scriptFile.writeText(scriptContent, StandardCharsets.UTF_8)
+            configFile.writeText(configJson, StandardCharsets.UTF_8)
 
-            val cmd = GeneralCommandLine(pythonPath, tempFile.absolutePath)
+            val cmd = GeneralCommandLine(pythonPath, scriptFile.absolutePath, configFile.absolutePath)
                 .withCharset(StandardCharsets.UTF_8)
                 .withEnvironment("PYTHONDONTWRITEBYTECODE", "1")
                 .withEnvironment("PYTHONIOENCODING", "utf-8")
@@ -82,7 +85,8 @@ object ProbeExecutor {
         } catch (e: Exception) {
             return errorResult("Failed to execute probe: ${e.message}", e.stackTraceToString())
         } finally {
-            tempFile.delete()
+            scriptFile.delete()
+            configFile.delete()
         }
     }
 

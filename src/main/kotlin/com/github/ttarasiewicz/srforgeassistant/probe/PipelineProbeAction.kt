@@ -79,8 +79,9 @@ class PipelineProbeAction : AnAction(
             projectPaths = projectPaths
         )
 
-        // Generate probe script
-        val script = ProbeScriptGenerator.generate(
+        // Load probe script and generate config
+        val script = ProbeScriptGenerator.loadScript()
+        val configJson = ProbeScriptGenerator.generateConfig(
             yamlFilePath = config.yamlFilePath,
             datasetPath = config.datasetPath,
             pipeline = config.pipeline,
@@ -91,7 +92,7 @@ class PipelineProbeAction : AnAction(
         // Run in background
         object : Task.Backgroundable(project, "Running Pipeline Probe...", true) {
             override fun run(indicator: ProgressIndicator) {
-                val result = ProbeExecutor.execute(project, script, indicator)
+                val result = ProbeExecutor.execute(project, script, configJson, indicator)
 
                 // Show results in tool window
                 com.intellij.openapi.application.ApplicationManager.getApplication().invokeLater {

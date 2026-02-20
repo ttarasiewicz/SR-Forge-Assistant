@@ -120,7 +120,8 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
     private fun rerunProbe() {
         val config = lastRunConfig ?: return
 
-        val script = ProbeScriptGenerator.generate(
+        val script = ProbeScriptGenerator.loadScript()
+        val configJson = ProbeScriptGenerator.generateConfig(
             yamlFilePath = config.yamlFilePath,
             datasetPath = config.datasetPath,
             pipeline = config.pipeline,
@@ -128,7 +129,7 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
             projectPaths = config.projectPaths
         )
 
-        executeProbe(script, config)
+        executeProbe(script, configJson, config)
     }
 
     // ── Configure & Run ─────────────────────────────────────────────────
@@ -178,7 +179,8 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
             projectPaths = projectPaths
         )
 
-        val script = ProbeScriptGenerator.generate(
+        val script = ProbeScriptGenerator.loadScript()
+        val configJson = ProbeScriptGenerator.generateConfig(
             yamlFilePath = config.yamlFilePath,
             datasetPath = config.datasetPath,
             pipeline = config.pipeline,
@@ -186,19 +188,19 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
             projectPaths = config.projectPaths
         )
 
-        executeProbe(script, config)
+        executeProbe(script, configJson, config)
     }
 
     // ── Shared execution ────────────────────────────────────────────────
 
-    private fun executeProbe(script: String, config: ProbeRunConfig) {
+    private fun executeProbe(script: String, configJson: String, config: ProbeRunConfig) {
         rerunButton.isEnabled = false
         headerLabel.text = "Running probe..."
         headerLabel.icon = null
 
         object : Task.Backgroundable(project, "Running Pipeline Probe...", true) {
             override fun run(indicator: ProgressIndicator) {
-                val result = ProbeExecutor.execute(project, script, indicator)
+                val result = ProbeExecutor.execute(project, script, configJson, indicator)
                 ApplicationManager.getApplication().invokeLater {
                     displayResult(result, config)
                 }
