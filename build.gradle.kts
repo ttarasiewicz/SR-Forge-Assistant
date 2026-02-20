@@ -42,11 +42,14 @@ intellijPlatform {
         name = providers.gradleProperty("pluginName").get()
     }
     buildSearchableOptions = false
-}
 
+    signing {
+        certificateChain = providers.environmentVariable("CERTIFICATE_CHAIN")
+        privateKey = providers.environmentVariable("PRIVATE_KEY")
+        password = providers.environmentVariable("PRIVATE_KEY_PASSWORD")
+    }
 
-// Enable Gradle’s Run IDE task
-tasks {
-// JetBrains plugin verifier (optional, but recommended if you plan to publish)
-// runPluginVerifier { }
+    publishing {
+        token = providers.environmentVariable("PUBLISH_TOKEN")
+    }
 }
