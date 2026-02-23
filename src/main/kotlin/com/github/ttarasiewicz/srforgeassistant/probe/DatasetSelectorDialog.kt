@@ -117,15 +117,12 @@ class DatasetSelectorDialog(
             overridePanel.add(pathLabel, gbc)
 
             gbc.gridx = 1; gbc.weightx = 1.0
+            val descriptor = FileChooserDescriptorFactory.createSingleFolderDescriptor()
+                .withTitle("Select Data Directory")
+                .withDescription("Choose directory for: $label")
             val field = TextFieldWithBrowseButton().apply {
                 text = originalPath
-                @Suppress("DEPRECATION")
-                addBrowseFolderListener(
-                    "Select Data Directory",
-                    "Choose directory for: $label",
-                    project,
-                    FileChooserDescriptorFactory.createSingleFolderDescriptor()
-                )
+                addBrowseFolderListener(project, descriptor)
             }
             overrideFields[originalPath] = field
             overridePanel.add(field, gbc)
