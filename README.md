@@ -8,11 +8,17 @@
 [![Version](https://img.shields.io/jetbrains/plugin/v/com.github.ttarasiewicz.srforgeassistant?style=flat-square)](https://plugins.jetbrains.com/plugin/com.github.ttarasiewicz.srforgeassistant)
 [![Platform](https://img.shields.io/badge/platform-242%2B-blue?style=flat-square)](https://plugins.jetbrains.com/plugin/com.github.ttarasiewicz.srforgeassistant)
 
-> **Screenshot:** `overview.png`
+<!-- > **Screenshot:** `overview.png`
 >
-> *Show the plugin in action: a YAML config file with completion popup, scope highlighting, and folded interpolations visible*
+> *Show the plugin in action: a YAML config file with completion popup, scope highlighting, and folded interpolations visible* -->
 
 </div>
+
+---
+
+[SR-Forge](https://gitlab.com/tarasiewicztomasz/sr-forge) is a Python framework for building super-resolution and image restoration pipelines through YAML configuration files. Instead of writing boilerplate training scripts, you declare datasets, transforms, models, and training loops as nested YAML nodes with `_target:` class references, `params:` mappings, and `${...}` / `%{...}` interpolations that wire everything together.
+
+**SR-Forge Assistant** brings first-class IDE support to these configs. It resolves `_target:` FQNs to real Python classes, autocompletes parameter names from `__init__` signatures, validates references, folds interpolations to their resolved values, and lets you probe live dataset pipelines without leaving the editor.
 
 ---
 
@@ -35,33 +41,33 @@ Everything related to `_target:` FQN values and their `params:` mappings.
 
 Fuzzy-search Python classes and functions by fully qualified name. A dot (`.`) auto-triggers the popup for the next path segment &mdash; no need to press Ctrl+Space repeatedly.
 
-> **Screenshot:** `target-completion.gif`
+<!-- > **Screenshot:** `target-completion.gif`
 >
-> *Show typing after `_target:`, dot popup appearing, selecting a class to insert the full FQN*
+> *Show typing after `_target:`, dot popup appearing, selecting a class to insert the full FQN* -->
 
 ### Parameter Name Completion
 
 Inside a `params:` block, get suggestions from the resolved class's `__init__` signature. Already-present parameters are automatically excluded.
 
-> **Screenshot:** `param-completion.gif`
+<!-- > **Screenshot:** `param-completion.gif`
 >
-> *Show pressing Ctrl+Space inside `params:`, seeing parameter names from the target class*
+> *Show pressing Ctrl+Space inside `params:`, seeing parameter names from the target class* -->
 
 ### Go-to-Definition
 
 **Ctrl+Click** (or **Ctrl+B**) on any `_target:` value to jump straight to the Python class or function definition.
 
-> **Screenshot:** `goto-definition.gif`
+<!-- > **Screenshot:** `goto-definition.gif`
 >
-> *Show Ctrl+Click on a `_target:` value, navigating to the Python source file*
+> *Show Ctrl+Click on a `_target:` value, navigating to the Python source file* -->
 
 ### Hover Documentation
 
 Hover over `_target:` values to see the class/function docstring and full signature. Hover over parameter keys inside `params:` to see their type, default value, and description.
 
-> **Screenshot:** `hover-docs.png`
+<!-- > **Screenshot:** `hover-docs.png`
 >
-> *Show hover popup on a `_target:` value displaying docstring and signature, and a second hover on a param key showing type info*
+> *Show hover popup on a `_target:` value displaying docstring and signature, and a second hover on a param key showing type info* -->
 
 ### Parameter Stub Generation
 
@@ -71,25 +77,25 @@ One-click insertion of missing parameters. Available via:
 
 Default values are used where available, `null` otherwise.
 
-> **Screenshot:** `param-stubs.gif`
+<!-- > **Screenshot:** `param-stubs.gif`
 >
-> *Show clicking the gutter icon on a `_target:` line, then the params block filling in with stubs*
+> *Show clicking the gutter icon on a `_target:` line, then the params block filling in with stubs* -->
 
 ### Missing Required Parameters Inspection
 
 Warning when required `__init__` parameters (those without defaults) are missing from `params:`. A quick-fix inserts them automatically.
 
-> **Screenshot:** `missing-params-inspection.png`
+<!-- > **Screenshot:** `missing-params-inspection.png`
 >
-> *Show yellow underline on a `_target:` value with the tooltip "Missing required parameter(s): root, split" and the quick-fix popup*
+> *Show yellow underline on a `_target:` value with the tooltip "Missing required parameter(s): root, split" and the quick-fix popup* -->
 
 ### Unknown Parameter Name Inspection
 
 Catches typos in parameter keys. Flags unknown names and suggests the closest match by edit distance with a one-click rename quick-fix.
 
-> **Screenshot:** `unknown-param-inspection.png`
+<!-- > **Screenshot:** `unknown-param-inspection.png`
 >
-> *Show yellow underline on a misspelled param key like `upsample_factr` with "Did you mean 'upsample_factor'?" tooltip*
+> *Show yellow underline on a misspelled param key like `upsample_factr` with "Did you mean 'upsample_factor'?" tooltip* -->
 
 ---
 
@@ -101,33 +107,33 @@ Completion, folding, validation, and chaining for `${...}`, `%{...}`, and `{ref:
 
 Segment-by-segment key path completion inside interpolation expressions. At each `.`, the popup shows direct children of the resolved node with value previews and type icons (mapping, sequence, scalar). Supports both dot notation (`list.0.key`) and bracket notation (`list[0].key`).
 
-> **Screenshot:** `interpolation-completion.gif`
+<!-- > **Screenshot:** `interpolation-completion.gif`
 >
-> *Show typing `${` to trigger popup, selecting segments one by one, value previews visible next to each suggestion*
+> *Show typing `${` to trigger popup, selecting segments one by one, value previews visible next to each suggestion* -->
 
 ### Code Folding
 
 Interpolation expressions are resolved against the YAML document and displayed as fold placeholders. Folds collapse automatically on file open and can be toggled individually or all at once via the toolbar.
 
-> **Screenshot:** `interpolation-folding.gif`
+<!-- > **Screenshot:** `interpolation-folding.gif`
 >
-> *Show a file opening with interpolations auto-folded to resolved values, then clicking a fold to expand it, then using the toolbar toggle*
+> *Show a file opening with interpolations auto-folded to resolved values, then clicking a fold to expand it, then using the toolbar toggle* -->
 
 ### Reference Validation
 
 Unresolvable interpolation paths are flagged with an error annotation. Unknown resolver prefixes (e.g. `${ef:...}`) are also detected.
 
-> **Screenshot:** `interpolation-validation.png`
+<!-- > **Screenshot:** `interpolation-validation.png`
 >
-> *Show a red/yellow annotation on an interpolation with an invalid path, and another on an unknown resolver prefix*
+> *Show a red/yellow annotation on an interpolation with an invalid path, and another on an unknown resolver prefix* -->
 
 ### Post-Interpolation Method Completion
 
 After an interpolation reference like `${ref:model}`, type `.` to get method and attribute completions from the resolved Python class.
 
-> **Screenshot:** `post-interpolation-methods.gif`
+<!-- > **Screenshot:** `post-interpolation-methods.gif`
 >
-> *Show typing `.` after `${ref:model}` and seeing method suggestions from the resolved class*
+> *Show typing `.` after `${ref:model}` and seeing method suggestions from the resolved class* -->
 
 ---
 
@@ -137,9 +143,9 @@ After an interpolation reference like `${ref:model}`, type `.` to get method and
 
 The current `_target:` block gets a subtle background shading, and the parent key is rendered in bold &mdash; making it easy to see which block you're editing in deeply nested configs. Colors adapt to light and dark themes.
 
-> **Screenshot:** `scope-highlighting.png`
+<!-- > **Screenshot:** `scope-highlighting.png`
 >
-> *Show a YAML file with the current block shaded and parent key bolded, contrasting with surrounding blocks*
+> *Show a YAML file with the current block shaded and parent key bolded, contrasting with surrounding blocks* -->
 
 ### SR-Forge Editor Toolbar
 
@@ -151,9 +157,9 @@ A toolbar appears at the top of YAML files with quick-access buttons:
 | **Run Pipeline Probe** | Launch the probe for the current file |
 | **SR-Forge Settings** | Open the settings panel |
 
-> **Screenshot:** `editor-toolbar.png`
+<!-- > **Screenshot:** `editor-toolbar.png`
 >
-> *Show the toolbar at the top of a YAML editor with the three action buttons visible*
+> *Show the toolbar at the top of a YAML editor with the three action buttons visible* -->
 
 ---
 
@@ -161,9 +167,9 @@ A toolbar appears at the top of YAML files with quick-access buttons:
 
 Run the actual dataset pipeline on a single sample and visualize the Entry state at every transform step &mdash; field names, shapes, dtypes, value ranges, and memory sizes &mdash; without leaving the editor.
 
-> **Screenshot:** `probe-overview.png`
+<!-- > **Screenshot:** `probe-overview.png`
 >
-> *Show the Pipeline Probe tool window with a full pipeline result: dataset header, transform step blocks, and color-coded field diffs*
+> *Show the Pipeline Probe tool window with a full pipeline result: dataset header, transform step blocks, and color-coded field diffs* -->
 
 ### Usage
 
@@ -173,9 +179,9 @@ Run the actual dataset pipeline on a single sample and visualize the Entry state
 4. Click OK &mdash; the probe runs in the background with a progress indicator
 5. Results appear in the **Pipeline Probe** tool window
 
-> **Screenshot:** `probe-dialog.png`
+<!-- > **Screenshot:** `probe-dialog.png`
 >
-> *Show the dataset selection dialog with detected datasets listed and path override fields*
+> *Show the dataset selection dialog with detected datasets listed and path override fields* -->
 
 ### Results Visualization
 
@@ -187,29 +193,29 @@ Results display as a vertical flow diagram:
 - **Field details** &mdash; click a step block to expand its field table (type, shape, dtype, min/max/mean/std, memory size, value preview)
 - **Container drill-down** &mdash; dict and list fields are expandable to inspect nested contents
 
-> **Screenshot:** `probe-results.gif`
+<!-- > **Screenshot:** `probe-results.gif`
 >
-> *Show expanding a step block to reveal the field table, then expanding a dict field to see nested contents*
+> *Show expanding a step block to reveal the field table, then expanding a dict field to see nested contents* -->
 
-> **Screenshot:** `probe-field-details.png`
+<!-- > **Screenshot:** `probe-field-details.png`
 >
-> *Show a field table with columns: name, type, shape, dtype, min, max, mean, std, memory, preview*
+> *Show a field table with columns: name, type, shape, dtype, min, max, mean, std, memory, preview* -->
 
 ### Nested Pipeline Support
 
 For pipelines that wrap other datasets (e.g. `PatchedDataset` wrapping `LazyDataset`), the inner dataset is probed first, then the outer one. Inner results appear above, connected by a "Wrapped by ..." arrow.
 
-> **Screenshot:** `probe-nested.png`
+<!-- > **Screenshot:** `probe-nested.png`
 >
-> *Show a nested pipeline result with inner dataset steps above and outer dataset steps below, connected by an arrow*
+> *Show a nested pipeline result with inner dataset steps above and outer dataset steps below, connected by an arrow* -->
 
 ### Error Handling
 
 If a transform fails mid-pipeline, all successful steps are shown normally, followed by a red error block with the error message and a collapsible traceback. If an inner dataset in a nested pipeline fails, the outer dataset is skipped with a notice.
 
-> **Screenshot:** `probe-error.png`
+<!-- > **Screenshot:** `probe-error.png`
 >
-> *Show a pipeline result where a transform failed: successful steps in normal colors, then a red error block with traceback*
+> *Show a pipeline result where a transform failed: successful steps in normal colors, then a red error block with traceback* -->
 
 ---
 
@@ -252,9 +258,9 @@ Access via **Settings > Tools > SR-Forge Assistant**.
 |---|:---:|---|
 | Timeout | 120s | Maximum time for the probe script to run |
 
-> **Screenshot:** `settings-panel.png`
+<!-- > **Screenshot:** `settings-panel.png`
 >
-> *Show the SR-Forge Assistant settings panel with all four sections visible*
+> *Show the SR-Forge Assistant settings panel with all four sections visible* -->
 
 ---
 
