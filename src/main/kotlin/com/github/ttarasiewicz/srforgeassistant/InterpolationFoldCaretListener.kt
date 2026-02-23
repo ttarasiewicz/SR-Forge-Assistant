@@ -45,7 +45,7 @@ class InterpolationFoldCaretListener : CaretListener {
     companion object {
         private val WAS_INSIDE_KEY = Key.create<Boolean>("interpolation.fold.wasInside")
         private val PREV_OFFSET_KEY = Key.create<Int>("interpolation.fold.prevOffset")
-        private val INTERPOLATION_REGEX = Regex("""[$%]\{[^}]+}|\{ref:\s*[^}]+}""")
+        private val INTERPOLATION_REGEX = Regex("""[$%]\{[^}]+}""")
 
         internal fun isInterpolationRegion(text: String, region: FoldRegion): Boolean {
             if (region.startOffset < 0 || region.endOffset > text.length) return false

@@ -51,6 +51,10 @@
                 language="yaml"
                 implementationClass="com.github.ttarasiewicz.srforgeassistant.InterpolationFoldingBuilder"/>
 
+        <externalAnnotator
+                language="yaml"
+                implementationClass="com.github.ttarasiewicz.srforgeassistant.InterpolationReferenceAnnotator"/>
+
         <codeInsight.lineMarkerProvider
                 language="yaml"
                 implementationClass="com.github.ttarasiewicz.srforgeassistant.TargetParamStubsLineMarkerProvider"/>

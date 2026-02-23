@@ -4,6 +4,7 @@ import com.intellij.icons.AllIcons
 import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.Task
@@ -121,6 +122,9 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
     private fun rerunProbe() {
         val config = lastRunConfig ?: return
 
+        // Save all documents so the Python probe reads the latest content from disk
+        FileDocumentManager.getInstance().saveAllDocuments()
+
         // Re-parse the YAML to pick up any edits since the last run
         val freshConfig = com.intellij.openapi.application.ReadAction.compute<ProbeRunConfig?, Throwable> {
             val vf = com.intellij.openapi.vfs.LocalFileSystem.getInstance()
@@ -148,6 +152,9 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
     // ── Configure & Run ─────────────────────────────────────────────────
 
     private fun configureAndRun() {
+        // Save all documents so the Python probe reads the latest content from disk
+        FileDocumentManager.getInstance().saveAllDocuments()
+
         // PSI access requires a read action
         val (yamlFile, datasets) = com.intellij.openapi.application.ReadAction.compute<Pair<YAMLFile?, List<Pair<String, DatasetNode>>>, Throwable> {
             val file = findYamlFile()

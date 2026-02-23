@@ -10,7 +10,6 @@ Invoked by the SR-Forge Assistant IntelliJ plugin.
 Usage: python probe_script.py <config.json>
 """
 import sys
-import os
 import re
 import json
 import traceback
@@ -205,49 +204,55 @@ def _probe_dataset(cfg, dataset_path, path_overrides):
     # Apply path overrides
     _apply_overrides(node, path_overrides)
 
+    # Import ConfigResolver early — this registers the ${ref:...} OmegaConf
+    # resolver, which is needed before any config value access.
     from srforge.config import ConfigResolver
+
+    # Strip recache=True from all datasets to prevent shutil.rmtree during construction
+    _strip_recache(node)
+
     resolver = ConfigResolver(cfg)
 
     return _probe_node(resolver, node, dataset_path)
 
 
-def _classify_transforms(transforms_val):
-    """Classify a transforms config value into either a reference path or raw config.
+def _strip_recache(node):
+    """Set recache=False on all dataset configs to prevent shutil.rmtree during construction."""
+    from omegaconf import DictConfig, open_dict
+    if not isinstance(node, DictConfig):
+        return
+    with open_dict(node):
+        if 'params' in node and node.params is not None:
+            if 'recache' in node.params:
+                node.params.recache = False
+            for k in node.params:
+                child = node.params[k]
+                if isinstance(child, DictConfig) and '_target' in child:
+                    _strip_recache(child)
 
-    Handles:
-    - %{path} strings  (SR-Forge interpolation)
-    - {ref: path} dicts (SR-Forge shorthand reference)
-    - Inline list of transform configs
 
-    Returns (source_path, raw_config) — exactly one will be non-None.
-    """
-    from omegaconf import OmegaConf, DictConfig
-
-    # %{path} string reference
-    if isinstance(transforms_val, str):
-        m = re.match(r'^%\{(.+)\}$', transforms_val.strip())
-        if m:
-            return m.group(1).strip(), None
-
-    # {ref: path} dict reference
-    if isinstance(transforms_val, (dict, DictConfig)):
-        keys = list(transforms_val)
-        if len(keys) == 1 and keys[0] == 'ref':
-            return str(transforms_val['ref']).strip(), None
-
-    # Inline config — convert to plain Python
-    raw = OmegaConf.to_container(transforms_val, resolve=True) \
-        if isinstance(transforms_val, DictConfig) else transforms_val
-    return None, raw
+def _disable_instance_cache(dataset):
+    """Disable caching on a live dataset instance and any nested datasets."""
+    if hasattr(dataset, '_cache_enabled'):
+        dataset._cache_enabled = False
+    for attr in vars(dataset).values():
+        if (attr is not None and attr is not dataset
+                and hasattr(attr, '_cache_enabled')):
+            _disable_instance_cache(attr)
 
 
 def _probe_node(resolver, node, path):
-    """Recursively probe a dataset node and its transforms."""
-    from omegaconf import OmegaConf, DictConfig, open_dict
+    """Recursively probe a dataset node and its transforms.
+
+    Strategy: let ConfigResolver instantiate the dataset fully (it handles all
+    reference resolution — {ref:...}, %{...}, inline configs). Then grab the
+    live _transforms from the instance, clear them, and apply one by one.
+    """
+    from omegaconf import DictConfig
 
     inner_result = None
 
-    # Check for wrapped datasets in params
+    # Identify wrapped datasets in params for separate step-by-step probing
     if 'params' in node and node.params is not None:
         for key in node.params:
             child = node.params[key]
@@ -268,7 +273,7 @@ def _probe_node(resolver, node, path):
                     }
                 break
 
-    # If inner dataset had errors, don't probe the outer - data wouldn't reach it
+    # If inner dataset had errors, skip outer
     if inner_result is not None:
         _has_err = any(s.get('errorMessage') for s in inner_result.get('snapshots', []))
         if _has_err:
@@ -280,101 +285,41 @@ def _probe_node(resolver, node, path):
                 'innerResult': inner_result,
             }
 
-    # Collect transforms config BEFORE stripping them
-    transforms_raw = None
-    transforms_source = None
-    if 'params' in node and node.params is not None and 'transforms' in node.params:
-        transforms_val = node.params.transforms
-        transforms_source, transforms_raw = _classify_transforms(transforms_val)
-    elif 'transforms' in node:
-        transforms_val = node.transforms
-        transforms_source, transforms_raw = _classify_transforms(transforms_val)
-
-    # Strip transforms and neutralize cache before instantiation
-    with open_dict(node):
-        saved_transforms = None
-        saved_transforms_location = None
-        saved_cache = {}
-        if 'params' in node and node.params is not None:
-            # Strip transforms so __getitem__ doesn't auto-apply them
-            if 'transforms' in node.params:
-                saved_transforms = node.params.transforms
-                saved_transforms_location = 'params'
-                node.params.transforms = None
-            # Neutralize cache: never delete or write to cache dirs
-            if 'cache_dir' in node.params:
-                saved_cache['cache_dir'] = node.params.cache_dir
-                node.params.cache_dir = None
-            if 'recache' in node.params:
-                saved_cache['recache'] = node.params.recache
-                node.params.recache = False
-        if saved_transforms is None and 'transforms' in node:
-            saved_transforms = node.transforms
-            saved_transforms_location = 'node'
-            node.transforms = None
-
-    # Use a fresh ConfigResolver so cached instances from inner probing
-    # (which had transforms stripped) don't leak into the outer dataset.
+    # Instantiate the dataset fully — ConfigResolver handles all reference
+    # resolution ({ref:...}, %{...}, inline configs, etc.)
+    # Note: recache was already stripped at config level to prevent shutil.rmtree.
     from srforge.config import ConfigResolver as _CR
     dataset = _CR(resolver.config)(node)
-    target_name = str(node._target).split('.')[-1]
+    target_name = type(dataset).__name__
 
-    # Restore original config values
-    with open_dict(node):
-        if saved_transforms is not None:
-            if saved_transforms_location == 'params':
-                node.params.transforms = saved_transforms
-            else:
-                node.transforms = saved_transforms
-        if 'params' in node and node.params is not None:
-            for k, v in saved_cache.items():
-                node.params[k] = v
+    # Grab transforms from the live instance, then clear them
+    # (Dataset.__getitem__ wrapper reads self._transforms)
+    transforms = list(getattr(dataset, '_transforms', None) or [])
+    dataset._transforms = []
 
-    # Get first entry (without transforms since we stripped them)
+    # Disable caching on the instance and all nested datasets
+    _disable_instance_cache(dataset)
+
+    # Get raw entry (no transforms, no caching)
     entry = dataset[0]
     snapshots = [_snapshot_entry(entry, target_name, 0)]
 
-    # Apply transforms one by one
-    if transforms_source is not None:
-        # Resolve %{...} reference via ConfigResolver
-        resolved = resolver._resolve_path(transforms_source)
-        transforms = list(resolved) if isinstance(resolved, (list, tuple)) else [resolved]
-        for i, transform in enumerate(transforms):
-            t_name = type(transform).__name__
-            try:
-                entry = transform(entry)
-                snapshots.append(_snapshot_entry(entry, t_name, i + 1))
-            except Exception as e:
-                snapshots.append({
-                    'stepLabel': t_name,
-                    'stepIndex': i + 1,
-                    'fields': [],
-                    'isBatched': False,
-                    'errorMessage': str(e),
-                    'errorTraceback': traceback.format_exc(),
-                })
-                break
-    elif transforms_raw is not None:
-        # Instantiate transforms from raw config using ConfigResolver
-        from omegaconf import OmegaConf as _OC
-        for i, t_cfg_raw in enumerate(transforms_raw):
-            try:
-                t_cfg = _OC.create(t_cfg_raw) if isinstance(t_cfg_raw, dict) else t_cfg_raw
-                transform = resolver(t_cfg)
-                t_name = type(transform).__name__
-                entry = transform(entry)
-                snapshots.append(_snapshot_entry(entry, t_name, i + 1))
-            except Exception as e:
-                t_name = t_cfg_raw.get('_target', '?').split('.')[-1] if isinstance(t_cfg_raw, dict) else '?'
-                snapshots.append({
-                    'stepLabel': t_name,
-                    'stepIndex': i + 1,
-                    'fields': [],
-                    'isBatched': False,
-                    'errorMessage': str(e),
-                    'errorTraceback': traceback.format_exc(),
-                })
-                break
+    # Apply saved transforms one by one
+    for i, transform in enumerate(transforms):
+        t_name = type(transform).__name__
+        try:
+            entry = transform(entry)
+            snapshots.append(_snapshot_entry(entry, t_name, i + 1))
+        except Exception as e:
+            snapshots.append({
+                'stepLabel': t_name,
+                'stepIndex': i + 1,
+                'fields': [],
+                'isBatched': False,
+                'errorMessage': str(e),
+                'errorTraceback': traceback.format_exc(),
+            })
+            break
 
     return {
         'datasetName': target_name,

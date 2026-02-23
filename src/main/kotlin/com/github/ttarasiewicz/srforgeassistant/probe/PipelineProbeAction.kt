@@ -6,6 +6,7 @@ import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.CommonDataKeys
 import com.intellij.openapi.command.WriteCommandAction
+import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.Task
@@ -22,6 +23,9 @@ class PipelineProbeAction : AnAction(
 ) {
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project ?: return
+
+        // Save all documents so the Python probe reads the latest content from disk
+        FileDocumentManager.getInstance().saveAllDocuments()
 
         // Try data context first, then fall back to the currently open editor
         val psiFile = (e.getData(CommonDataKeys.PSI_FILE) as? YAMLFile)
