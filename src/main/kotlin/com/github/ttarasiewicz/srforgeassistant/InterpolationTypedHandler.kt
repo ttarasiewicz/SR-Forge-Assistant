@@ -34,6 +34,8 @@ class InterpolationTypedHandler : TypedHandlerDelegate() {
             '.', ']' -> {
                 if (YamlInterpolationCompletionContributor.isInsideInterpolation(text, offset)) {
                     AutoPopupController.getInstance(project).scheduleAutoPopup(editor)
+                } else if (c == '.' && InterpolationUtils.isAfterInterpolationClose(text, offset)) {
+                    AutoPopupController.getInstance(project).scheduleAutoPopup(editor)
                 }
             }
         }
