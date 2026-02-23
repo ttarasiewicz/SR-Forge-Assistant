@@ -152,6 +152,11 @@ object YamlPipelineParser {
             ?.firstOrNull { it.keyText == "root" }
             ?.let { (it.value as? YAMLScalar)?.textValue }
 
+        // Find cache directory
+        val cacheDir = paramsMapping?.keyValues
+            ?.firstOrNull { it.keyText == "cache_dir" }
+            ?.let { (it.value as? YAMLScalar)?.textValue }
+
         // Find wrapped dataset inside params
         val wrappedDataset = findWrappedDataset(paramsMapping, path, text, project)
 
@@ -166,6 +171,7 @@ object YamlPipelineParser {
             transforms = transforms,
             wrappedDataset = wrappedDataset,
             dataRoot = dataRoot,
+            cacheDir = cacheDir,
             yamlOffset = mapping.textOffset
         )
     }

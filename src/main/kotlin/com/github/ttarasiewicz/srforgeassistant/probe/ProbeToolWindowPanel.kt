@@ -62,6 +62,7 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
     var lastRunConfig: ProbeRunConfig? = null
         private set
 
+
     init {
         val headerPanel = JPanel(BorderLayout()).apply {
             border = JBUI.Borders.empty(6, 12, 6, 8)
@@ -102,7 +103,7 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
                 headerLabel.text = "Pipeline probe completed in ${result.executionTimeMs}ms"
                 headerLabel.icon = ProbeIcons.Probe
             }
-            displayDatasetResult(result.result)
+            displayDatasetResult(result.result, datasetNode = lastRunConfig?.pipeline)
         } else {
             displayError(result)
         }
@@ -120,16 +121,28 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
     private fun rerunProbe() {
         val config = lastRunConfig ?: return
 
+        // Re-parse the YAML to pick up any edits since the last run
+        val freshConfig = com.intellij.openapi.application.ReadAction.compute<ProbeRunConfig?, Throwable> {
+            val vf = com.intellij.openapi.vfs.LocalFileSystem.getInstance()
+                .findFileByPath(config.yamlFilePath) ?: return@compute null
+            val yamlFile = PsiManager.getInstance(project).findFile(vf) as? YAMLFile
+                ?: return@compute null
+            val datasets = YamlPipelineParser.findDatasetNodes(yamlFile, project)
+            val freshNode = datasets.firstOrNull { it.first == config.datasetPath }?.second
+                ?: return@compute null
+            config.copy(pipeline = freshNode)
+        } ?: config
+
         val script = ProbeScriptGenerator.loadScript()
         val configJson = ProbeScriptGenerator.generateConfig(
-            yamlFilePath = config.yamlFilePath,
-            datasetPath = config.datasetPath,
-            pipeline = config.pipeline,
-            pathOverrides = config.pathOverrides,
-            projectPaths = config.projectPaths
+            yamlFilePath = freshConfig.yamlFilePath,
+            datasetPath = freshConfig.datasetPath,
+            pipeline = freshConfig.pipeline,
+            pathOverrides = freshConfig.pathOverrides,
+            projectPaths = freshConfig.projectPaths
         )
 
-        executeProbe(script, configJson, config)
+        executeProbe(script, configJson, freshConfig)
     }
 
     // ── Configure & Run ─────────────────────────────────────────────────
@@ -240,11 +253,14 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
      */
     private fun displayDatasetResult(
         result: DatasetProbeResult,
-        previousSnapshot: EntrySnapshot? = null
+        previousSnapshot: EntrySnapshot? = null,
+        datasetNode: DatasetNode? = null
     ): EntrySnapshot? {
         var innerLastSnapshot: EntrySnapshot? = previousSnapshot
         if (result.innerResult != null) {
-            innerLastSnapshot = displayDatasetResult(result.innerResult, previousSnapshot)
+            innerLastSnapshot = displayDatasetResult(
+                result.innerResult, previousSnapshot, datasetNode?.wrappedDataset
+            )
             addConnector("Wrapped by ${result.datasetName}")
         }
 
@@ -295,6 +311,13 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
             addStepBlock(snapshot, diffs)
         }
 
+        // Cache block — show after all transforms if this dataset has caching configured
+        val cacheDir = datasetNode?.cacheDir
+        if (cacheDir != null) {
+            addConnector(null)
+            addCacheBlock(cacheDir)
+        }
+
         return snapshots.lastOrNull { it.errorMessage == null }
     }
 
@@ -327,6 +350,35 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
             font = font.deriveFont(font.size - 1f)
         }
         block.add(targetLabel, BorderLayout.EAST)
+
+        contentPanel.add(block)
+    }
+
+    private fun addCacheBlock(cacheDir: String) {
+        val block = object : JPanel(BorderLayout()) {
+            override fun paintComponent(g: Graphics) {
+                val g2 = g as Graphics2D
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+                g2.color = background
+                g2.fillRoundRect(0, 0, width, height, JBUI.scale(8), JBUI.scale(8))
+                g2.color = CACHE_BLOCK_BORDER
+                g2.drawRoundRect(0, 0, width - 1, height - 1, JBUI.scale(8), JBUI.scale(8))
+            }
+        }.apply {
+            isOpaque = false
+            background = CACHE_BLOCK_BG
+            border = JBUI.Borders.empty(8, 14)
+            maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(40))
+            alignmentX = Component.LEFT_ALIGNMENT
+        }
+
+        val label = JBLabel("Cached \u2192 $cacheDir").apply {
+            foreground = JBColor(Color(0x004D40), Color(0xB2DFDB))
+            font = font.deriveFont(Font.BOLD)
+            icon = AllIcons.Actions.Lightning
+            iconTextGap = JBUI.scale(6)
+        }
+        block.add(label, BorderLayout.WEST)
 
         contentPanel.add(block)
     }
@@ -650,6 +702,10 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
         // Error step blocks
         private val ERROR_BLOCK_BG = JBColor(Color(0xFFEBEE), Color(0x3B1B1B))
         private val ERROR_BLOCK_BORDER = JBColor(Color(0xEF9A9A), Color(0xC62828))
+
+        // Cache blocks — teal/cyan
+        private val CACHE_BLOCK_BG = JBColor(Color(0xE0F2F1), Color(0x1B3B36))
+        private val CACHE_BLOCK_BORDER = JBColor(Color(0x80CBC4), Color(0x00897B))
 
         /** Check whether any snapshot in the result tree contains an error. */
         private fun hasSnapshotErrors(result: DatasetProbeResult): Boolean {

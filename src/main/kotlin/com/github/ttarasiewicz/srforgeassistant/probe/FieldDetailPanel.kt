@@ -10,8 +10,13 @@ import java.awt.event.MouseEvent
 import javax.swing.*
 
 /**
+ * Which side of a diff to display in a snapshot section.
+ */
+private enum class DiffSide { AFTER, BEFORE }
+
+/**
  * Displays fields as individual expandable blocks with color-coded borders.
- * All blocks start expanded; clicking the header collapses/expands.
+ * All blocks start collapsed; clicking the header expands.
  */
 class FieldDetailPanel(private val diffs: List<FieldDiff>) : JPanel() {
 
@@ -41,17 +46,13 @@ class FieldDetailPanel(private val diffs: List<FieldDiff>) : JPanel() {
             )
         }
 
-        // Header bar — field name + type summary (always visible)
         val headerPanel = createHeaderPanel(diff, field, statusIcon, bgColor)
-
-        // Detail body — expanded by default
         val bodyPanel = createBodyPanel(diff, field, bgColor)
 
         headerPanel.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
         headerPanel.addMouseListener(object : MouseAdapter() {
             override fun mouseClicked(e: MouseEvent) {
                 bodyPanel.isVisible = !bodyPanel.isVisible
-                // Update collapse indicator
                 val indicator = headerPanel.getClientProperty("collapseLabel") as? JBLabel
                 indicator?.text = if (bodyPanel.isVisible) "\u25BE" else "\u25B8"
                 block.revalidate()
@@ -88,7 +89,6 @@ class FieldDetailPanel(private val diffs: List<FieldDiff>) : JPanel() {
             isOpaque = false
         }
 
-        // Collapse indicator (collapsed by default)
         val collapseLabel = JBLabel("\u25B8").apply {
             foreground = UIUtil.getInactiveTextColor()
             font = font.deriveFont(Font.PLAIN, font.size - 1f)
@@ -96,21 +96,17 @@ class FieldDetailPanel(private val diffs: List<FieldDiff>) : JPanel() {
         panel.putClientProperty("collapseLabel", collapseLabel)
         leftPanel.add(collapseLabel)
 
-        // Status icon
         if (statusIcon.isNotEmpty()) {
-            val statusLabel = JBLabel(statusIcon).apply {
+            leftPanel.add(JBLabel(statusIcon).apply {
                 foreground = diffStatusColor(diff.status)
                 font = font.deriveFont(Font.BOLD)
-            }
-            leftPanel.add(statusLabel)
+            })
         }
 
-        // Field name
         leftPanel.add(JBLabel(field.key).apply {
             font = font.deriveFont(Font.BOLD)
         })
 
-        // Type + shape summary (muted)
         val childCount = diff.childDiffs?.size ?: 0
         val childHint = if (childCount > 0) "  ($childCount elements)" else ""
         leftPanel.add(JBLabel(typeName + shapeSummary + childHint).apply {
@@ -120,7 +116,6 @@ class FieldDetailPanel(private val diffs: List<FieldDiff>) : JPanel() {
 
         panel.add(leftPanel, BorderLayout.WEST)
 
-        // Right side: size badge
         if (field.sizeBytes != null) {
             panel.add(JBLabel(formatBytes(field.sizeBytes)).apply {
                 foreground = UIUtil.getInactiveTextColor()
@@ -142,67 +137,268 @@ class FieldDetailPanel(private val diffs: List<FieldDiff>) : JPanel() {
             } else {
                 isOpaque = false
             }
-            // Start collapsed — user clicks field header to expand
             isVisible = false
+        }
+
+        when (diff.status) {
+            FieldDiffStatus.MODIFIED -> {
+                if (diff.after != null) {
+                    panel.add(createCollapsibleSection(
+                        "After:", diff.after, diff.childDiffs, DiffSide.AFTER, bgColor, startExpanded = true
+                    ))
+                }
+                if (diff.before != null) {
+                    panel.add(Box.createVerticalStrut(JBUI.scale(2)))
+                    panel.add(createCollapsibleSection(
+                        "Before:", diff.before, diff.childDiffs, DiffSide.BEFORE, bgColor, startExpanded = false
+                    ))
+                }
+            }
+            FieldDiffStatus.REMOVED -> {
+                if (diff.before != null) {
+                    panel.add(createCollapsibleSection(
+                        "Before:", diff.before, diff.childDiffs, DiffSide.BEFORE, bgColor, startExpanded = true
+                    ))
+                }
+            }
+            else -> {
+                // ADDED or UNCHANGED: show stats + children directly
+                val monoFont = Font(Font.MONOSPACED, Font.PLAIN, UIUtil.getFontSize(UIUtil.FontSize.SMALL).toInt())
+                addSnapshotStats(panel, field, monoFont, UIUtil.getLabelForeground())
+                if (!diff.childDiffs.isNullOrEmpty()) {
+                    panel.add(Box.createVerticalStrut(JBUI.scale(4)))
+                    val childPanel = FieldDetailPanel(diff.childDiffs)
+                    childPanel.alignmentX = Component.LEFT_ALIGNMENT
+                    panel.add(childPanel)
+                }
+            }
+        }
+
+        return panel
+    }
+
+    /**
+     * Creates a collapsible "After:" or "Before:" section with full stats and color-coded children.
+     *
+     * Children are filtered and colored based on [side]:
+     * - AFTER: shows children that have an `after` snapshot (ADDED=green, MODIFIED=yellow, UNCHANGED=grey)
+     * - BEFORE: shows children that have a `before` snapshot (REMOVED=red, MODIFIED=yellow, UNCHANGED=grey)
+     */
+    private fun createCollapsibleSection(
+        label: String,
+        snapshot: FieldSnapshot,
+        childDiffs: List<FieldDiff>?,
+        side: DiffSide,
+        bgColor: Color?,
+        startExpanded: Boolean
+    ): JPanel {
+        val wrapper = JPanel().apply {
+            layout = BoxLayout(this, BoxLayout.Y_AXIS)
+            alignmentX = Component.LEFT_ALIGNMENT
+            isOpaque = false
         }
 
         val monoFont = Font(Font.MONOSPACED, Font.PLAIN, UIUtil.getFontSize(UIUtil.FontSize.SMALL).toInt())
         val detailColor = UIUtil.getLabelForeground()
-        val mutedColor = UIUtil.getInactiveTextColor()
 
-        // Detail rows
-        if (field.shape != null) addDetailRow(panel, "Shape", field.shape, monoFont, detailColor)
-        if (field.dtype != null) addDetailRow(panel, "DType", field.dtype, monoFont, detailColor)
-        if (field.minValue != null && field.maxValue != null) {
-            addDetailRow(panel, "Range", "[${field.minValue}, ${field.maxValue}]", monoFont, detailColor)
-        } else if (field.minValue != null) {
-            addDetailRow(panel, "Min", field.minValue, monoFont, detailColor)
-        }
-        if (field.meanValue != null) addDetailRow(panel, "Mean", field.meanValue, monoFont, detailColor)
-        if (field.stdValue != null) addDetailRow(panel, "Std", field.stdValue, monoFont, detailColor)
-        if (field.preview != null) addDetailRow(panel, "Value", field.preview, monoFont, mutedColor)
-
-        // Show "before" comparison for modified fields
-        if (diff.status == FieldDiffStatus.MODIFIED && diff.before != null) {
-            panel.add(Box.createVerticalStrut(JBUI.scale(3)))
-            panel.add(JSeparator().apply {
-                maximumSize = Dimension(Int.MAX_VALUE, 1)
-                alignmentX = Component.LEFT_ALIGNMENT
-            })
-            panel.add(Box.createVerticalStrut(JBUI.scale(3)))
-
-            val b = diff.before
-            val beforeColor = JBColor(Color(0x9E9E9E), Color(0x787878))
-            panel.add(JBLabel("Before:").apply {
-                font = monoFont.deriveFont(Font.BOLD)
-                foreground = beforeColor
-                alignmentX = Component.LEFT_ALIGNMENT
-            })
-            if (b.shape != null && b.shape != field.shape)
-                addDetailRow(panel, "  Shape", b.shape, monoFont, beforeColor)
-            if (b.dtype != null && b.dtype != field.dtype)
-                addDetailRow(panel, "  DType", b.dtype, monoFont, beforeColor)
-            if (b.minValue != null && (b.minValue != field.minValue || b.maxValue != field.maxValue))
-                addDetailRow(panel, "  Range", "[${b.minValue}, ${b.maxValue ?: "?"}]", monoFont, beforeColor)
-            if (b.meanValue != null && b.meanValue != field.meanValue)
-                addDetailRow(panel, "  Mean", b.meanValue, monoFont, beforeColor)
-            if (b.stdValue != null && b.stdValue != field.stdValue)
-                addDetailRow(panel, "  Std", b.stdValue, monoFont, beforeColor)
-            if (b.preview != null && b.preview != field.preview)
-                addDetailRow(panel, "  Value", b.preview, monoFont, beforeColor)
-            if (b.sizeBytes != null && b.sizeBytes != field.sizeBytes)
-                addDetailRow(panel, "  Size", formatBytes(b.sizeBytes), monoFont, beforeColor)
+        val contentPanel = JPanel().apply {
+            layout = BoxLayout(this, BoxLayout.Y_AXIS)
+            border = JBUI.Borders.emptyLeft(16)
+            if (bgColor != null) {
+                background = bgColor
+                isOpaque = true
+            } else {
+                isOpaque = false
+            }
+            isVisible = startExpanded
         }
 
-        // Nested children for containers (dicts, lists, tuples)
-        if (!diff.childDiffs.isNullOrEmpty()) {
-            panel.add(Box.createVerticalStrut(JBUI.scale(4)))
-            val childPanel = FieldDetailPanel(diff.childDiffs)
+        addSnapshotStats(contentPanel, snapshot, monoFont, detailColor)
+
+        // Render children with diff-aware coloring
+        val visibleChildren = childDiffs?.filter { diff ->
+            when (side) {
+                DiffSide.AFTER -> diff.after != null
+                DiffSide.BEFORE -> diff.before != null
+            }
+        }
+        if (!visibleChildren.isNullOrEmpty()) {
+            contentPanel.add(Box.createVerticalStrut(JBUI.scale(4)))
+            val childPanel = SidedChildPanel(visibleChildren, side, bgColor)
             childPanel.alignmentX = Component.LEFT_ALIGNMENT
-            panel.add(childPanel)
+            contentPanel.add(childPanel)
         }
 
-        return panel
+        // Section header
+        val headerPanel = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0)).apply {
+            isOpaque = false
+            alignmentX = Component.LEFT_ALIGNMENT
+            maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(20))
+            cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+        }
+
+        val collapseLabel = JBLabel(if (startExpanded) "\u25BE" else "\u25B8").apply {
+            foreground = UIUtil.getInactiveTextColor()
+            font = monoFont.deriveFont(Font.PLAIN, font.size - 1f)
+        }
+        headerPanel.add(collapseLabel)
+        headerPanel.add(JBLabel(label).apply {
+            font = monoFont.deriveFont(Font.BOLD)
+            foreground = detailColor
+        })
+
+        headerPanel.addMouseListener(object : MouseAdapter() {
+            override fun mouseClicked(e: MouseEvent) {
+                contentPanel.isVisible = !contentPanel.isVisible
+                collapseLabel.text = if (contentPanel.isVisible) "\u25BE" else "\u25B8"
+                wrapper.revalidate()
+                wrapper.repaint()
+            }
+        })
+
+        wrapper.add(headerPanel)
+        wrapper.add(contentPanel)
+        return wrapper
+    }
+
+    /**
+     * Renders child diffs for one side (After or Before) with diff-aware color coding.
+     * Each child shows the snapshot from the requested side, colored by its diff status.
+     */
+    private inner class SidedChildPanel(
+        childDiffs: List<FieldDiff>,
+        private val side: DiffSide,
+        private val bgColor: Color?
+    ) : JPanel() {
+        init {
+            layout = BoxLayout(this, BoxLayout.Y_AXIS)
+            isOpaque = false
+
+            for (diff in childDiffs) {
+                add(createChildBlock(diff))
+                add(Box.createVerticalStrut(JBUI.scale(2)))
+            }
+        }
+
+        private fun createChildBlock(diff: FieldDiff): JPanel {
+            val snapshot = when (side) {
+                DiffSide.AFTER -> diff.after
+                DiffSide.BEFORE -> diff.before
+            } ?: return JPanel()
+
+            val borderColor = diffBorderColor(diff.status)
+            val icon = statusIcon(diff.status)
+
+            val block = JPanel().apply {
+                layout = BoxLayout(this, BoxLayout.Y_AXIS)
+                alignmentX = Component.LEFT_ALIGNMENT
+                maximumSize = Dimension(Int.MAX_VALUE, Int.MAX_VALUE)
+                border = BorderFactory.createCompoundBorder(
+                    BorderFactory.createMatteBorder(0, JBUI.scale(3), 0, 0, borderColor),
+                    JBUI.Borders.empty(0, 0)
+                )
+            }
+
+            val monoFont = Font(Font.MONOSPACED, Font.PLAIN, UIUtil.getFontSize(UIUtil.FontSize.SMALL).toInt())
+            val detailColor = UIUtil.getLabelForeground()
+
+            // Header
+            val typeName = snapshot.pythonType.substringAfterLast('.')
+            val shapeSummary = buildShapeSummary(snapshot)
+            val childCount = snapshot.children?.size ?: 0
+            val childHint = if (childCount > 0) "  ($childCount elements)" else ""
+
+            val headerPanel = JPanel(BorderLayout()).apply {
+                maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(26))
+                border = JBUI.Borders.empty(3, 8, 3, 8)
+                isOpaque = false
+            }
+
+            val leftPanel = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0)).apply {
+                isOpaque = false
+            }
+
+            val collapseLabel = JBLabel("\u25B8").apply {
+                foreground = UIUtil.getInactiveTextColor()
+                font = monoFont.deriveFont(Font.PLAIN, font.size - 1f)
+            }
+            leftPanel.add(collapseLabel)
+
+            if (icon.isNotEmpty()) {
+                leftPanel.add(JBLabel(icon).apply {
+                    foreground = diffStatusColor(diff.status)
+                    font = font.deriveFont(Font.BOLD)
+                })
+            }
+
+            leftPanel.add(JBLabel(snapshot.key).apply { font = font.deriveFont(Font.BOLD) })
+            leftPanel.add(JBLabel(typeName + shapeSummary + childHint).apply {
+                foreground = UIUtil.getInactiveTextColor()
+                font = font.deriveFont(font.size - 1f)
+            })
+            headerPanel.add(leftPanel, BorderLayout.WEST)
+
+            if (snapshot.sizeBytes != null) {
+                headerPanel.add(JBLabel(formatBytes(snapshot.sizeBytes)).apply {
+                    foreground = UIUtil.getInactiveTextColor()
+                    font = font.deriveFont(font.size - 1f)
+                    border = JBUI.Borders.emptyRight(4)
+                }, BorderLayout.EAST)
+            }
+
+            // Body
+            val bodyPanel = JPanel().apply {
+                layout = BoxLayout(this, BoxLayout.Y_AXIS)
+                border = JBUI.Borders.empty(2, 20, 6, 8)
+                isOpaque = false
+                isVisible = false
+            }
+
+            addSnapshotStats(bodyPanel, snapshot, monoFont, detailColor)
+
+            // Recursive nested children
+            val nestedChildDiffs = diff.childDiffs?.filter { nested ->
+                when (side) {
+                    DiffSide.AFTER -> nested.after != null
+                    DiffSide.BEFORE -> nested.before != null
+                }
+            }
+            if (!nestedChildDiffs.isNullOrEmpty()) {
+                bodyPanel.add(Box.createVerticalStrut(JBUI.scale(4)))
+                val nestedPanel = SidedChildPanel(nestedChildDiffs, side, bgColor)
+                nestedPanel.alignmentX = Component.LEFT_ALIGNMENT
+                bodyPanel.add(nestedPanel)
+            }
+
+            headerPanel.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+            headerPanel.addMouseListener(object : MouseAdapter() {
+                override fun mouseClicked(e: MouseEvent) {
+                    bodyPanel.isVisible = !bodyPanel.isVisible
+                    collapseLabel.text = if (bodyPanel.isVisible) "\u25BE" else "\u25B8"
+                    block.revalidate()
+                    block.repaint()
+                }
+            })
+
+            block.add(headerPanel)
+            block.add(bodyPanel)
+            return block
+        }
+    }
+
+    private fun addSnapshotStats(panel: JPanel, snapshot: FieldSnapshot, monoFont: Font, color: Color) {
+        val mutedColor = UIUtil.getInactiveTextColor()
+        if (snapshot.shape != null) addDetailRow(panel, "Shape", snapshot.shape, monoFont, color)
+        if (snapshot.dtype != null) addDetailRow(panel, "DType", snapshot.dtype, monoFont, color)
+        if (snapshot.minValue != null && snapshot.maxValue != null) {
+            addDetailRow(panel, "Range", "[${snapshot.minValue}, ${snapshot.maxValue}]", monoFont, color)
+        } else if (snapshot.minValue != null) {
+            addDetailRow(panel, "Min", snapshot.minValue, monoFont, color)
+        }
+        if (snapshot.meanValue != null) addDetailRow(panel, "Mean", snapshot.meanValue, monoFont, color)
+        if (snapshot.stdValue != null) addDetailRow(panel, "Std", snapshot.stdValue, monoFont, color)
+        if (snapshot.preview != null) addDetailRow(panel, "Value", snapshot.preview, monoFont, mutedColor)
+        if (snapshot.sizeBytes != null) addDetailRow(panel, "Size", formatBytes(snapshot.sizeBytes), monoFont, mutedColor)
     }
 
     private fun addDetailRow(panel: JPanel, label: String, value: String, font: Font, color: Color) {

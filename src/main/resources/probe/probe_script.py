@@ -211,6 +211,36 @@ def _probe_dataset(cfg, dataset_path, path_overrides):
     return _probe_node(resolver, node, dataset_path)
 
 
+def _classify_transforms(transforms_val):
+    """Classify a transforms config value into either a reference path or raw config.
+
+    Handles:
+    - %{path} strings  (SR-Forge interpolation)
+    - {ref: path} dicts (SR-Forge shorthand reference)
+    - Inline list of transform configs
+
+    Returns (source_path, raw_config) — exactly one will be non-None.
+    """
+    from omegaconf import OmegaConf, DictConfig
+
+    # %{path} string reference
+    if isinstance(transforms_val, str):
+        m = re.match(r'^%\{(.+)\}$', transforms_val.strip())
+        if m:
+            return m.group(1).strip(), None
+
+    # {ref: path} dict reference
+    if isinstance(transforms_val, (dict, DictConfig)):
+        keys = list(transforms_val)
+        if len(keys) == 1 and keys[0] == 'ref':
+            return str(transforms_val['ref']).strip(), None
+
+    # Inline config — convert to plain Python
+    raw = OmegaConf.to_container(transforms_val, resolve=True) \
+        if isinstance(transforms_val, DictConfig) else transforms_val
+    return None, raw
+
+
 def _probe_node(resolver, node, path):
     """Recursively probe a dataset node and its transforms."""
     from omegaconf import OmegaConf, DictConfig, open_dict
@@ -255,18 +285,10 @@ def _probe_node(resolver, node, path):
     transforms_source = None
     if 'params' in node and node.params is not None and 'transforms' in node.params:
         transforms_val = node.params.transforms
-        if isinstance(transforms_val, str) and re.match(r'^%\{.+\}$', transforms_val.strip()):
-            ref_path = re.match(r'^%\{(.+)\}$', transforms_val.strip()).group(1).strip()
-            transforms_source = ref_path
-        else:
-            transforms_raw = OmegaConf.to_container(transforms_val, resolve=True)
+        transforms_source, transforms_raw = _classify_transforms(transforms_val)
     elif 'transforms' in node:
         transforms_val = node.transforms
-        if isinstance(transforms_val, str) and re.match(r'^%\{.+\}$', transforms_val.strip()):
-            ref_path = re.match(r'^%\{(.+)\}$', transforms_val.strip()).group(1).strip()
-            transforms_source = ref_path
-        else:
-            transforms_raw = OmegaConf.to_container(transforms_val, resolve=True)
+        transforms_source, transforms_raw = _classify_transforms(transforms_val)
 
     # Strip transforms and neutralize cache before instantiation
     with open_dict(node):

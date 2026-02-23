@@ -23,6 +23,7 @@ data class DatasetNode(
     val transforms: List<TransformStep>,
     val wrappedDataset: DatasetNode?,
     val dataRoot: String?,
+    val cacheDir: String? = null,
     val yamlOffset: Int
 )
 
