@@ -38,7 +38,8 @@ class InterpolationFoldingBuilder : FoldingBuilderEx() {
         val descriptors = ArrayList<FoldingDescriptor>()
 
         for (match in INTERPOLATION_REGEX.findAll(text)) {
-            val path = match.groupValues[1].trim()
+            val path = (match.groupValues[1].takeIf { it.isNotEmpty() }
+                ?: match.groupValues[2]).trim()
             if (path.isEmpty()) continue
 
             val resolved = YamlInterpolationCompletionContributor.resolveValueFromText(text, path)
@@ -62,6 +63,6 @@ class InterpolationFoldingBuilder : FoldingBuilderEx() {
         SrForgeHighlightSettings.getInstance().state.foldOnFileOpen
 
     companion object {
-        private val INTERPOLATION_REGEX = Regex("""[$%]\{([^}]+)}""")
+        private val INTERPOLATION_REGEX = Regex("""[$%]\{([^}]+)}|\{ref:\s*([^}]+)}""")
     }
 }

@@ -57,10 +57,18 @@ class YamlInterpolationCompletionContributor : CompletionContributor() {
     companion object {
         fun isInsideInterpolation(text: String, offset: Int): Boolean {
             var i = (offset - 1).coerceAtMost(text.length - 1)
-            while (i >= 1) {
+            while (i >= 0) {
                 val ch = text[i]
                 if (ch == '}') return false
-                if (ch == '{' && (text[i - 1] == '$' || text[i - 1] == '%')) return true
+                if (ch == '{') {
+                    // ${...} or %{...}
+                    if (i >= 1 && (text[i - 1] == '$' || text[i - 1] == '%')) return true
+                    // {ref: ...}
+                    var j = i + 1
+                    while (j < text.length && text[j] == ' ') j++
+                    if (j + 4 <= text.length && text.regionMatches(j, "ref:", 0, 4)) return true
+                    return false
+                }
                 i--
             }
             return false
@@ -68,11 +76,26 @@ class YamlInterpolationCompletionContributor : CompletionContributor() {
 
         fun findInterpolationParentPath(text: String, offset: Int): String? {
             var i = (offset - 1).coerceAtMost(text.length - 1)
-            while (i >= 1) {
+            while (i >= 0) {
                 val ch = text[i]
                 if (ch == '}') return null
-                if (ch == '{' && (text[i - 1] == '$' || text[i - 1] == '%')) {
-                    val inside = text.substring(i + 1, offset)
+                if (ch == '{') {
+                    val inside: String
+                    if (i >= 1 && (text[i - 1] == '$' || text[i - 1] == '%')) {
+                        // ${...} or %{...}
+                        inside = text.substring(i + 1, offset)
+                    } else {
+                        // Check for {ref: ...}
+                        var j = i + 1
+                        while (j < text.length && text[j] == ' ') j++
+                        if (j + 4 <= text.length && text.regionMatches(j, "ref:", 0, 4)) {
+                            var k = j + 4
+                            while (k < offset && text[k] == ' ') k++
+                            inside = text.substring(k, offset)
+                        } else {
+                            return null
+                        }
+                    }
                     return if (inside.contains('.')) inside.substringBeforeLast('.') else ""
                 }
                 i--
@@ -463,7 +486,7 @@ class YamlInterpolationCompletionContributor : CompletionContributor() {
             return s
         }
 
-        private val SINGLE_INTERPOLATION = Regex("""^[$%]\{([^}]+)}$""")
+        private val SINGLE_INTERPOLATION = Regex("""^(?:[$%]\{([^}]+)}|\{ref:\s*([^}]+)})$""")
 
         /**
          * Resolve the value at [path] within the YAML [text].
@@ -479,7 +502,8 @@ class YamlInterpolationCompletionContributor : CompletionContributor() {
             val value = resolveValueDirect(text, path) ?: return null
             val inner = SINGLE_INTERPOLATION.matchEntire(value)
             if (inner != null) {
-                val innerPath = inner.groupValues[1].trim()
+                val innerPath = (inner.groupValues[1].takeIf { it.isNotEmpty() }
+                    ?: inner.groupValues[2]).trim()
                 return resolveValueRecursive(text, innerPath, visited) ?: value
             }
             return value
