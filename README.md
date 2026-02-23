@@ -16,6 +16,12 @@
 
 ---
 
+[SR-Forge](https://gitlab.com/tarasiewicztomasz/sr-forge) is a Python framework for building super-resolution and image restoration pipelines through YAML configuration files. Instead of writing boilerplate training scripts, you declare datasets, transforms, models, and training loops as nested YAML nodes with `_target:` class references, `params:` mappings, and `${...}` / `%{...}` interpolations that wire everything together.
+
+**SR-Forge Assistant** brings first-class IDE support to these configs. It resolves `_target:` FQNs to real Python classes, autocompletes parameter names from `__init__` signatures, validates references, folds interpolations to their resolved values, and lets you probe live dataset pipelines without leaving the editor.
+
+---
+
 ## Highlights
 
 | | Feature | What it does |
