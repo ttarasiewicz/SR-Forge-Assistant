@@ -8,8 +8,6 @@ import com.intellij.openapi.actionSystem.CommonDataKeys
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileEditor.FileEditorManager
-import com.intellij.openapi.progress.ProgressIndicator
-import com.intellij.openapi.progress.Task
 import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.psi.PsiManager
 import org.jetbrains.yaml.psi.YAMLFile
@@ -93,26 +91,17 @@ class PipelineProbeAction : AnAction(
             projectPaths = config.projectPaths
         )
 
-        // Run in background
-        object : Task.Backgroundable(project, "Running Pipeline Probe...", true) {
-            override fun run(indicator: ProgressIndicator) {
-                val result = ProbeExecutor.execute(project, script, configJson, indicator)
+        // Activate tool window and delegate execution to the panel
+        val toolWindow = ToolWindowManager.getInstance(project)
+            .getToolWindow("Pipeline Probe")
 
-                // Show results in tool window
-                com.intellij.openapi.application.ApplicationManager.getApplication().invokeLater {
-                    val toolWindow = ToolWindowManager.getInstance(project)
-                        .getToolWindow("Pipeline Probe")
-
-                    if (toolWindow != null) {
-                        toolWindow.activate {
-                            val content = toolWindow.contentManager.getContent(0)
-                            val panel = content?.component as? ProbeToolWindowPanel
-                            panel?.displayResult(result, config)
-                        }
-                    }
-                }
+        if (toolWindow != null) {
+            toolWindow.activate {
+                val content = toolWindow.contentManager.getContent(0)
+                val panel = content?.component as? ProbeToolWindowPanel
+                panel?.executeProbe(script, configJson, config)
             }
-        }.queue()
+        }
     }
 
     override fun update(e: AnActionEvent) {

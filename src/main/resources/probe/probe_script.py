@@ -4,7 +4,7 @@ SR-Forge Pipeline Probe script.
 
 Loads a YAML config, instantiates a dataset pipeline using SR-Forge's
 ConfigResolver, captures Entry state after each transform step, and
-outputs structured JSON between markers.
+emits structured JSON events for real-time UI rendering.
 
 Invoked by the SR-Forge Assistant IntelliJ plugin.
 Usage: python probe_script.py <config.json>
@@ -16,6 +16,16 @@ import traceback
 import time
 
 import yaml
+
+
+# ── Event emission ─────────────────────────────────────────────────
+
+_EVENT_MARKER = '===PROBE_EVENT==='
+
+
+def _emit(event):
+    """Emit a single event as a one-line JSON string, flushed immediately."""
+    print(f'{_EVENT_MARKER}{json.dumps(event, default=str)}', flush=True)
 
 
 # ── Config loading ──────────────────────────────────────────────────
@@ -213,7 +223,7 @@ def _probe_dataset(cfg, dataset_path, path_overrides):
 
     resolver = ConfigResolver(cfg)
 
-    return _probe_node(resolver, node, dataset_path)
+    _probe_node(resolver, node, dataset_path)
 
 
 def _strip_recache(node):
@@ -242,54 +252,66 @@ def _disable_instance_cache(dataset):
 
 
 def _probe_node(resolver, node, path):
-    """Recursively probe a dataset node and its transforms.
+    """Recursively probe a dataset node and its transforms, emitting events.
 
     Strategy: let ConfigResolver instantiate the dataset fully (it handles all
     reference resolution — {ref:...}, %{...}, inline configs). Then grab the
     live _transforms from the instance, clear them, and apply one by one.
+
+    Returns True if any error occurred, False otherwise.
     """
     from omegaconf import DictConfig
 
-    inner_result = None
+    inner_had_errors = False
 
     # Identify wrapped datasets in params for separate step-by-step probing
     if 'params' in node and node.params is not None:
         for key in node.params:
             child = node.params[key]
             if isinstance(child, DictConfig) and '_target' in child:
-                try:
-                    inner_result = _probe_node(resolver, child, f'{path}.params.{key}')
-                except Exception as e:
-                    inner_result = {
-                        'datasetName': str(child._target).split('.')[-1],
-                        'datasetTarget': str(child._target),
-                        'snapshots': [{
-                            'stepLabel': str(child._target).split('.')[-1],
-                            'stepIndex': 0, 'fields': [], 'isBatched': False,
-                            'errorMessage': str(e),
-                            'errorTraceback': traceback.format_exc(),
-                        }],
-                        'innerResult': None,
-                    }
+                inner_had_errors = _probe_node(resolver, child, f'{path}.params.{key}')
+                if not inner_had_errors:
+                    target_name = str(node._target).split('.')[-1]
+                    _emit({'type': 'connector', 'label': f'Wrapped by {target_name}'})
                 break
 
-    # If inner dataset had errors, skip outer
-    if inner_result is not None:
-        _has_err = any(s.get('errorMessage') for s in inner_result.get('snapshots', []))
-        if _has_err:
-            target_name = str(node._target).split('.')[-1]
-            return {
-                'datasetName': target_name,
-                'datasetTarget': str(node._target),
-                'snapshots': [],
-                'innerResult': inner_result,
-            }
+    target_fqn = str(node._target)
+    target_name = target_fqn.split('.')[-1]
+
+    # If inner dataset had errors, skip outer dataset
+    if inner_had_errors:
+        _emit({
+            'type': 'dataset_start',
+            'datasetName': target_name,
+            'datasetTarget': target_fqn,
+            'datasetPath': path,
+        })
+        _emit({'type': 'skipped', 'reason': 'Inner dataset pipeline failed'})
+        _emit({'type': 'dataset_end', 'datasetPath': path})
+        return True
+
+    _emit({
+        'type': 'dataset_start',
+        'datasetName': target_name,
+        'datasetTarget': target_fqn,
+        'datasetPath': path,
+    })
 
     # Instantiate the dataset fully — ConfigResolver handles all reference
     # resolution ({ref:...}, %{...}, inline configs, etc.)
     # Note: recache was already stripped at config level to prevent shutil.rmtree.
     from srforge.config import ConfigResolver as _CR
-    dataset = _CR(resolver.config)(node)
+    try:
+        dataset = _CR(resolver.config)(node)
+    except Exception as e:
+        _emit({
+            'type': 'init_error',
+            'errorMessage': str(e),
+            'errorTraceback': traceback.format_exc(),
+        })
+        _emit({'type': 'dataset_end', 'datasetPath': path})
+        return True
+
     target_name = type(dataset).__name__
 
     # Grab transforms from the live instance, then clear them
@@ -302,31 +324,30 @@ def _probe_node(resolver, node, path):
 
     # Get raw entry (no transforms, no caching)
     entry = dataset[0]
-    snapshots = [_snapshot_entry(entry, target_name, 0)]
+    snapshot = _snapshot_entry(entry, target_name, 0)
+    _emit({'type': 'snapshot', **snapshot})
 
     # Apply saved transforms one by one
+    had_errors = False
     for i, transform in enumerate(transforms):
         t_name = type(transform).__name__
         try:
             entry = transform(entry)
-            snapshots.append(_snapshot_entry(entry, t_name, i + 1))
+            snapshot = _snapshot_entry(entry, t_name, i + 1)
+            _emit({'type': 'snapshot', **snapshot})
         except Exception as e:
-            snapshots.append({
+            _emit({
+                'type': 'step_error',
                 'stepLabel': t_name,
                 'stepIndex': i + 1,
-                'fields': [],
-                'isBatched': False,
                 'errorMessage': str(e),
                 'errorTraceback': traceback.format_exc(),
             })
+            had_errors = True
             break
 
-    return {
-        'datasetName': target_name,
-        'datasetTarget': str(node._target),
-        'snapshots': snapshots,
-        'innerResult': inner_result,
-    }
+    _emit({'type': 'dataset_end', 'datasetPath': path})
+    return had_errors
 
 
 # ── Main ────────────────────────────────────────────────────────────
@@ -343,33 +364,20 @@ def main():
     start_time = time.time()
     try:
         cfg = _load_config(probe_config['yamlPath'])
-        result = _probe_dataset(
+        _probe_dataset(
             cfg,
             probe_config['datasetPath'],
             probe_config.get('pathOverrides', {}),
         )
-        elapsed = int((time.time() - start_time) * 1000)
-
-        output = {
-            'success': True,
-            'result': result,
-            'errorMessage': None,
-            'errorTraceback': None,
-            'executionTimeMs': elapsed,
-        }
     except Exception as e:
-        elapsed = int((time.time() - start_time) * 1000)
-        output = {
-            'success': False,
-            'result': None,
+        _emit({
+            'type': 'error',
             'errorMessage': str(e),
             'errorTraceback': traceback.format_exc(),
-            'executionTimeMs': elapsed,
-        }
+        })
 
-    print('===PROBE_RESULT_BEGIN===')
-    print(json.dumps(output, indent=2, default=str))
-    print('===PROBE_RESULT_END===')
+    elapsed = int((time.time() - start_time) * 1000)
+    _emit({'type': 'complete', 'executionTimeMs': elapsed})
 
 
 if __name__ == '__main__':
