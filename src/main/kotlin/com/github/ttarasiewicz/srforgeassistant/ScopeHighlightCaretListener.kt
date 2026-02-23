@@ -6,6 +6,8 @@ import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.editor.event.CaretEvent
 import com.intellij.openapi.editor.event.CaretListener
+import com.intellij.openapi.editor.event.DocumentEvent
+import com.intellij.openapi.editor.event.DocumentListener
 import com.intellij.openapi.editor.markup.HighlighterLayer
 import com.intellij.openapi.editor.markup.HighlighterTargetArea
 import com.intellij.openapi.editor.markup.RangeHighlighter
@@ -23,20 +25,35 @@ import org.jetbrains.yaml.psi.YAMLMapping
 import java.awt.Font
 
 /**
- * Two complementary highlights for YAML files with `_target:` blocks:
+ * Two complementary highlights for YAML files:
  *
- * 1. **Block highlight** — shades the background of the entire `_target:` mapping
- *    the caret is inside (subtle tint so you see scope boundaries).
+ * 1. **Block highlight** — shades the background of the parent key's entire scope
+ *    (subtle tint so you see scope boundaries).
  *
  * 2. **Parent key highlight** — highlights the line of the immediate parent YAML key
  *    so you always know "which key am I nested under?" at a glance.
  *
+ * On blank/whitespace-only lines, indentation-based detection is used since PSI
+ * has no meaningful element. On content lines, PSI tree walking is used.
+ *
  * Colors and enabled state are read from [SrForgeHighlightSettings].
  */
-class ScopeHighlightCaretListener : CaretListener {
+class ScopeHighlightCaretListener : CaretListener, DocumentListener {
 
     override fun caretPositionChanged(event: CaretEvent) {
         refreshHighlights(event.editor)
+    }
+
+    override fun documentChanged(event: DocumentEvent) {
+        val doc = event.document
+        val file = FileDocumentManager.getInstance().getFile(doc) ?: return
+        if (!file.name.endsWith(".yaml") && !file.name.endsWith(".yml")) return
+        // Defer to after the write action completes so PSI is committed
+        ApplicationManager.getApplication().invokeLater {
+            for (editor in EditorFactory.getInstance().getEditors(doc)) {
+                refreshHighlights(editor)
+            }
+        }
     }
 
     fun refreshHighlights(editor: Editor) {
@@ -47,6 +64,7 @@ class ScopeHighlightCaretListener : CaretListener {
         val project = editor.project ?: return
         val settings = SrForgeHighlightSettings.getInstance()
         val caretOffset = editor.caretModel.offset
+        val caretColumn = editor.caretModel.logicalPosition.column
 
         data class HighlightInfo(val blockRange: TextRange?, val parentKeyLineRange: TextRange?)
 
@@ -54,22 +72,28 @@ class ScopeHighlightCaretListener : CaretListener {
             val psiFile = PsiDocumentManager.getInstance(project).getPsiFile(doc)
                 ?: return@compute HighlightInfo(null, null)
 
-            // Clamp offset to the last content character on the line so that
-            // placing the caret at end-of-line gives the same result as on the text.
             val line = doc.getLineNumber(caretOffset)
             val lineStart = doc.getLineStartOffset(line)
             val lineEnd = doc.getLineEndOffset(line)
             val lineText = doc.getText(TextRange(lineStart, lineEnd))
-            val lastContent = lineStart + lineText.trimEnd().length
-            val offset = if (lastContent > lineStart) caretOffset.coerceAtMost(lastContent - 1) else caretOffset
 
-            val element = psiFile.findElementAt(offset)
-                ?: return@compute HighlightInfo(null, null)
-
-            val blockRange = if (settings.state.blockEnabled) findEnclosingTargetMapping(element)?.textRange else null
-            val parentKeyLineRange = if (settings.state.parentKeyEnabled) findParentKeyLineRange(element, doc) else null
-
-            HighlightInfo(blockRange, parentKeyLineRange)
+            if (lineText.isBlank()) {
+                // Indentation-based: PSI has no meaningful element on blank lines
+                findHighlightsByIndentation(
+                    caretColumn, line, doc,
+                    settings.state.blockEnabled, settings.state.parentKeyEnabled
+                ).let { HighlightInfo(it.first, it.second) }
+            } else {
+                // PSI-based
+                val lastContent = lineStart + lineText.trimEnd().length
+                val offset = caretOffset.coerceAtMost(lastContent - 1).coerceAtLeast(lineStart)
+                val element = psiFile.findElementAt(offset)
+                    ?: return@compute HighlightInfo(null, null)
+                findHighlightsByPsi(
+                    element, doc,
+                    settings.state.blockEnabled, settings.state.parentKeyEnabled
+                ).let { HighlightInfo(it.first, it.second) }
+            }
         }
 
         // ── Block highlight ────────────────────────────────────────────
@@ -149,30 +173,15 @@ class ScopeHighlightCaretListener : CaretListener {
         }
 
         /**
-         * Walk up the PSI tree to find the nearest [YAMLMapping] that
-         * contains a `_target:` key-value pair.
+         * PSI-based highlights for content lines.
+         * Block = parent key-value's full scope. Parent key = that key's line.
          */
-        fun findEnclosingTargetMapping(element: PsiElement): YAMLMapping? {
-            var current: PsiElement? = element
-            while (current != null) {
-                if (current is YAMLMapping) {
-                    if (current.keyValues.any { it.keyText == "_target" }) {
-                        return current
-                    }
-                }
-                current = current.parent
-            }
-            return null
-        }
-
-        /**
-         * Find the immediate parent YAML key for the element at the caret.
-         * Returns a [TextRange] covering that key's full line.
-         */
-        private fun findParentKeyLineRange(
+        private fun findHighlightsByPsi(
             element: PsiElement,
-            doc: com.intellij.openapi.editor.Document
-        ): TextRange? {
+            doc: com.intellij.openapi.editor.Document,
+            blockEnabled: Boolean,
+            parentKeyEnabled: Boolean
+        ): Pair<TextRange?, TextRange?> {
             var kv: YAMLKeyValue? = null
             var current: PsiElement? = element
             while (current != null) {
@@ -182,13 +191,75 @@ class ScopeHighlightCaretListener : CaretListener {
                 }
                 current = current.parent
             }
-            if (kv == null) return null
+            if (kv == null) return null to null
 
-            val parentMapping = kv.parent as? YAMLMapping ?: return null
-            val parentKv = parentMapping.parent as? YAMLKeyValue ?: return null
+            val parentMapping = kv.parent as? YAMLMapping ?: return null to null
+            val parentKv = parentMapping.parent as? YAMLKeyValue ?: return null to null
 
-            val line = doc.getLineNumber(parentKv.textOffset)
-            return TextRange(doc.getLineStartOffset(line), doc.getLineEndOffset(line))
+            val blockRange = if (blockEnabled) parentKv.textRange else null
+
+            val parentKeyLineRange = if (parentKeyEnabled) {
+                val line = doc.getLineNumber(parentKv.textOffset)
+                TextRange(doc.getLineStartOffset(line), doc.getLineEndOffset(line))
+            } else null
+
+            return blockRange to parentKeyLineRange
+        }
+
+        /**
+         * Indentation-based highlights for blank/whitespace lines.
+         * Scans upward for the nearest YAML key with indent < caret column (= parent),
+         * then forward to find the block end (next line at ≤ parent indent).
+         */
+        private fun findHighlightsByIndentation(
+            caretColumn: Int,
+            caretLine: Int,
+            doc: com.intellij.openapi.editor.Document,
+            blockEnabled: Boolean,
+            parentKeyEnabled: Boolean
+        ): Pair<TextRange?, TextRange?> {
+            var parentLineNum = -1
+            var parentIndent = -1
+            for (lineNum in (caretLine - 1) downTo 0) {
+                val lineStart = doc.getLineStartOffset(lineNum)
+                val lineEnd = doc.getLineEndOffset(lineNum)
+                val lineText = doc.getText(TextRange(lineStart, lineEnd))
+                val trimmed = lineText.trimStart()
+                if (trimmed.isEmpty() || trimmed.startsWith('#')) continue
+                val indent = lineText.length - trimmed.length
+                if (indent < caretColumn && trimmed.contains(':')) {
+                    parentLineNum = lineNum
+                    parentIndent = indent
+                    break
+                }
+            }
+            if (parentLineNum < 0) return null to null
+
+            val parentLineStart = doc.getLineStartOffset(parentLineNum)
+            val parentLineEnd = doc.getLineEndOffset(parentLineNum)
+
+            val parentKeyLineRange = if (parentKeyEnabled) {
+                TextRange(parentLineStart, parentLineEnd)
+            } else null
+
+            val blockRange = if (blockEnabled) {
+                var blockEnd = doc.getLineEndOffset(doc.lineCount - 1)
+                for (lineNum in (parentLineNum + 1) until doc.lineCount) {
+                    val ls = doc.getLineStartOffset(lineNum)
+                    val le = doc.getLineEndOffset(lineNum)
+                    val lt = doc.getText(TextRange(ls, le))
+                    val t = lt.trimStart()
+                    if (t.isEmpty() || t.startsWith('#')) continue
+                    val ind = lt.length - t.length
+                    if (ind <= parentIndent) {
+                        blockEnd = if (lineNum > 0) doc.getLineEndOffset(lineNum - 1) else ls
+                        break
+                    }
+                }
+                TextRange(parentLineStart, blockEnd)
+            } else null
+
+            return blockRange to parentKeyLineRange
         }
     }
 }
@@ -200,8 +271,9 @@ class ScopeHighlightCaretListener : CaretListener {
 class ScopeHighlightStartup : StartupActivity.DumbAware {
     override fun runActivity(project: Project) {
         val listener = ScopeHighlightCaretListener()
-        EditorFactory.getInstance().eventMulticaster
-            .addCaretListener(listener, project)
+        val multicaster = EditorFactory.getInstance().eventMulticaster
+        multicaster.addCaretListener(listener, project)
+        multicaster.addDocumentListener(listener, project)
 
         ApplicationManager.getApplication().messageBus
             .connect(project)

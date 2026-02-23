@@ -5,7 +5,12 @@ import com.intellij.codeInsight.completion.*
 import com.intellij.codeInsight.lookup.LookupElement
 import com.intellij.codeInsight.lookup.LookupElementBuilder
 import com.intellij.icons.AllIcons
+import com.intellij.openapi.project.DumbService
 import com.intellij.util.ProcessingContext
+import com.jetbrains.python.psi.PyClass
+import com.jetbrains.python.psi.PyFunction
+import com.jetbrains.python.psi.PyNamedParameter
+import com.jetbrains.python.psi.types.TypeEvalContext
 
 /**
  * Completion inside `${...}` and `%{...}` interpolation expressions in YAML files.
@@ -30,6 +35,14 @@ class YamlInterpolationCompletionContributor : CompletionContributor() {
 
         val offset = parameters.offset
         val docText = parameters.editor.document.text
+
+        // Check for post-interpolation method completion: ${ref:model}.▌
+        val postCtx = InterpolationUtils.findPostInterpolationContext(docText, offset)
+        if (postCtx != null) {
+            fillMethodCompletions(postCtx, docText, parameters, result)
+            return
+        }
+
         val parentPath = findInterpolationParentPath(docText, offset) ?: return
 
         val prefix = findInterpolationPrefix(docText, offset)
@@ -54,13 +67,56 @@ class YamlInterpolationCompletionContributor : CompletionContributor() {
         }
     }
 
+    // ── Post-interpolation method completion ────────────────────────
+
+    private fun fillMethodCompletions(
+        postCtx: InterpolationUtils.PostInterpolationContext,
+        docText: String,
+        parameters: CompletionParameters,
+        result: CompletionResultSet
+    ) {
+        // v1: only complete on the first dot after } — chained methods
+        // would require return type inference
+        if (postCtx.chainDepth > 0) return
+
+        val project = parameters.editor.project ?: return
+        if (DumbService.isDumb(project)) return
+
+        // Resolve reference path → _target: FQN
+        val targetFqn = resolveValueFromText(docText, "${postCtx.referencePath}._target")
+            ?: return
+        // Skip truncated or non-FQN values
+        if (targetFqn.endsWith("...") || targetFqn.startsWith("{")) return
+
+        val pyClass = TargetUtils.resolveTargetClass(targetFqn, project) ?: return
+
+        val prefix = postCtx.methodPrefix
+        val adjusted = result.withPrefixMatcher(PlainPrefixMatcher(prefix))
+        adjusted.stopHere()
+
+        val methods = collectCallableMethods(pyClass)
+        for (info in methods) {
+            val el = LookupElementBuilder.create(info.name)
+                .withTypeText(info.typeText, true)
+                .withTailText("()", true)
+                .withIcon(AllIcons.Nodes.Method)
+                .withInsertHandler(METHOD_INSERT_HANDLER)
+                .withCaseSensitivity(false)
+            adjusted.addElement(el)
+        }
+    }
+
     companion object {
         fun isInsideInterpolation(text: String, offset: Int): Boolean {
             var i = (offset - 1).coerceAtMost(text.length - 1)
-            while (i >= 1) {
+            while (i >= 0) {
                 val ch = text[i]
                 if (ch == '}') return false
-                if (ch == '{' && (text[i - 1] == '$' || text[i - 1] == '%')) return true
+                if (ch == '{') {
+                    // ${...} or %{...}
+                    if (i >= 1 && (text[i - 1] == '$' || text[i - 1] == '%')) return true
+                    return false
+                }
                 i--
             }
             return false
@@ -68,11 +124,16 @@ class YamlInterpolationCompletionContributor : CompletionContributor() {
 
         fun findInterpolationParentPath(text: String, offset: Int): String? {
             var i = (offset - 1).coerceAtMost(text.length - 1)
-            while (i >= 1) {
+            while (i >= 0) {
                 val ch = text[i]
                 if (ch == '}') return null
-                if (ch == '{' && (text[i - 1] == '$' || text[i - 1] == '%')) {
-                    val inside = text.substring(i + 1, offset)
+                if (ch == '{') {
+                    if (i < 1 || (text[i - 1] != '$' && text[i - 1] != '%')) return null
+                    var inside = text.substring(i + 1, offset)
+                    // Strip ref: resolver prefix for ${ref:...} syntax
+                    if (text[i - 1] == '$' && inside.startsWith("ref:")) {
+                        inside = inside.removePrefix("ref:").trimStart()
+                    }
                     return if (inside.contains('.')) inside.substringBeforeLast('.') else ""
                 }
                 i--
@@ -84,7 +145,7 @@ class YamlInterpolationCompletionContributor : CompletionContributor() {
             var i = offset - 1
             while (i >= 0) {
                 val ch = text[i]
-                if (ch == '.' || ch == '{') return text.substring(i + 1, offset)
+                if (ch == '.' || ch == '{' || ch == ':') return text.substring(i + 1, offset)
                 i--
             }
             return text.substring(0, offset)
@@ -479,7 +540,8 @@ class YamlInterpolationCompletionContributor : CompletionContributor() {
             val value = resolveValueDirect(text, path) ?: return null
             val inner = SINGLE_INTERPOLATION.matchEntire(value)
             if (inner != null) {
-                val innerPath = inner.groupValues[1].trim()
+                val innerPath = InterpolationUtils.extractResolvablePath(inner.groupValues[1].trim())
+                    ?: return value
                 return resolveValueRecursive(text, innerPath, visited) ?: value
             }
             return value
@@ -659,6 +721,83 @@ class YamlInterpolationCompletionContributor : CompletionContributor() {
             }
             AutoPopupController.getInstance(ctx.project).scheduleAutoPopup(ctx.editor)
             ctx.setAddCompletionChar(false)
+        }
+
+        /** Inserts `()` after the method name and moves the cursor after `)`. */
+        private val METHOD_INSERT_HANDLER = InsertHandler<LookupElement> { ctx, _ ->
+            val doc = ctx.document
+            val tail = ctx.editor.caretModel.offset
+            val hasParens = tail + 1 < doc.textLength &&
+                doc.charsSequence[tail] == '(' && doc.charsSequence[tail + 1] == ')'
+            if (!hasParens) {
+                doc.insertString(tail, "()")
+            }
+            ctx.editor.caretModel.moveToOffset(tail + 2)
+            ctx.setAddCompletionChar(false)
+        }
+
+        // ── Method collection from Python classes ────────────────────
+
+        private data class MethodInfo(val name: String, val typeText: String)
+
+        /**
+         * Collect public methods callable with zero explicit arguments from
+         * [pyClass] and its superclasses. Excludes `__dunder__` methods.
+         * Subclass methods take precedence over inherited ones.
+         */
+        private fun collectCallableMethods(pyClass: PyClass): List<MethodInfo> {
+            val ctx = TypeEvalContext.codeAnalysis(pyClass.project, pyClass.containingFile)
+            val seen = HashSet<String>()
+            val result = ArrayList<MethodInfo>()
+
+            fun processClass(cls: PyClass) {
+                val className = cls.name ?: "?"
+                for (method in cls.methods) {
+                    val name = method.name ?: continue
+                    if (name.startsWith("_")) continue
+                    if (!seen.add(name)) continue
+                    if (!isCallableWithNoArgs(method)) continue
+
+                    val returnType = extractReturnType(method)
+                    val typeText = if (returnType != null) "$className -> $returnType" else className
+                    result.add(MethodInfo(name, typeText))
+                }
+            }
+
+            processClass(pyClass)
+            for (sup in pyClass.getSuperClasses(ctx)) {
+                if (sup.qualifiedName == "builtins.object") continue
+                processClass(sup)
+            }
+
+            return result.sortedBy { it.name.lowercase() }
+        }
+
+        /**
+         * Check if a method can be called with zero explicit arguments.
+         * True when all parameters after self/cls have defaults or are
+         * *args/ **kwargs containers.
+         */
+        private fun isCallableWithNoArgs(method: PyFunction): Boolean {
+            for (param in method.parameterList.parameters) {
+                if (param is PyNamedParameter) {
+                    if (param.isSelf) continue
+                    if (param.isPositionalContainer || param.isKeywordContainer) continue
+                    if (param.hasDefaultValue()) continue
+                    return false
+                }
+            }
+            return true
+        }
+
+        /** Extract the return type annotation from a Python function, if present. */
+        private fun extractReturnType(method: PyFunction): String? {
+            val text = method.text ?: return null
+            val arrowIdx = text.indexOf("->")
+            if (arrowIdx < 0) return null
+            val colonIdx = text.indexOf(':', arrowIdx)
+            if (colonIdx <= arrowIdx) return null
+            return text.substring(arrowIdx + 2, colonIdx).trim().takeIf { it.isNotEmpty() }
         }
     }
 }

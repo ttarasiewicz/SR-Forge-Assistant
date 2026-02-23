@@ -38,8 +38,10 @@ class InterpolationFoldingBuilder : FoldingBuilderEx() {
         val descriptors = ArrayList<FoldingDescriptor>()
 
         for (match in INTERPOLATION_REGEX.findAll(text)) {
-            val path = match.groupValues[1].trim()
-            if (path.isEmpty()) continue
+            val content = match.groupValues[1].trim()
+            if (content.isEmpty()) continue
+
+            val path = InterpolationUtils.extractResolvablePath(content) ?: continue
 
             val resolved = YamlInterpolationCompletionContributor.resolveValueFromText(text, path)
                 ?: continue

@@ -4,19 +4,28 @@ SR-Forge Pipeline Probe script.
 
 Loads a YAML config, instantiates a dataset pipeline using SR-Forge's
 ConfigResolver, captures Entry state after each transform step, and
-outputs structured JSON between markers.
+emits structured JSON events for real-time UI rendering.
 
 Invoked by the SR-Forge Assistant IntelliJ plugin.
 Usage: python probe_script.py <config.json>
 """
 import sys
-import os
 import re
 import json
 import traceback
 import time
 
 import yaml
+
+
+# ── Event emission ─────────────────────────────────────────────────
+
+_EVENT_MARKER = '===PROBE_EVENT==='
+
+
+def _emit(event):
+    """Emit a single event as a one-line JSON string, flushed immediately."""
+    print(f'{_EVENT_MARKER}{json.dumps(event, default=str)}', flush=True)
 
 
 # ── Config loading ──────────────────────────────────────────────────
@@ -205,161 +214,140 @@ def _probe_dataset(cfg, dataset_path, path_overrides):
     # Apply path overrides
     _apply_overrides(node, path_overrides)
 
+    # Import ConfigResolver early — this registers the ${ref:...} OmegaConf
+    # resolver, which is needed before any config value access.
     from srforge.config import ConfigResolver
+
+    # Strip recache=True from all datasets to prevent shutil.rmtree during construction
+    _strip_recache(node)
+
     resolver = ConfigResolver(cfg)
 
-    return _probe_node(resolver, node, dataset_path)
+    _probe_node(resolver, node, dataset_path)
+
+
+def _strip_recache(node):
+    """Set recache=False on all dataset configs to prevent shutil.rmtree during construction."""
+    from omegaconf import DictConfig, open_dict
+    if not isinstance(node, DictConfig):
+        return
+    with open_dict(node):
+        if 'params' in node and node.params is not None:
+            if 'recache' in node.params:
+                node.params.recache = False
+            for k in node.params:
+                child = node.params[k]
+                if isinstance(child, DictConfig) and '_target' in child:
+                    _strip_recache(child)
+
+
+def _disable_instance_cache(dataset):
+    """Disable caching on a live dataset instance and any nested datasets."""
+    if hasattr(dataset, '_cache_enabled'):
+        dataset._cache_enabled = False
+    for attr in vars(dataset).values():
+        if (attr is not None and attr is not dataset
+                and hasattr(attr, '_cache_enabled')):
+            _disable_instance_cache(attr)
 
 
 def _probe_node(resolver, node, path):
-    """Recursively probe a dataset node and its transforms."""
-    from omegaconf import OmegaConf, DictConfig, open_dict
+    """Recursively probe a dataset node and its transforms, emitting events.
 
-    inner_result = None
+    Strategy: let ConfigResolver instantiate the dataset fully (it handles all
+    reference resolution — {ref:...}, %{...}, inline configs). Then grab the
+    live _transforms from the instance, clear them, and apply one by one.
 
-    # Check for wrapped datasets in params
+    Returns True if any error occurred, False otherwise.
+    """
+    from omegaconf import DictConfig
+
+    inner_had_errors = False
+
+    # Identify wrapped datasets in params for separate step-by-step probing
     if 'params' in node and node.params is not None:
         for key in node.params:
             child = node.params[key]
             if isinstance(child, DictConfig) and '_target' in child:
-                try:
-                    inner_result = _probe_node(resolver, child, f'{path}.params.{key}')
-                except Exception as e:
-                    inner_result = {
-                        'datasetName': str(child._target).split('.')[-1],
-                        'datasetTarget': str(child._target),
-                        'snapshots': [{
-                            'stepLabel': str(child._target).split('.')[-1],
-                            'stepIndex': 0, 'fields': [], 'isBatched': False,
-                            'errorMessage': str(e),
-                            'errorTraceback': traceback.format_exc(),
-                        }],
-                        'innerResult': None,
-                    }
+                inner_had_errors = _probe_node(resolver, child, f'{path}.params.{key}')
+                if not inner_had_errors:
+                    target_name = str(node._target).split('.')[-1]
+                    _emit({'type': 'connector', 'label': f'Wrapped by {target_name}'})
                 break
 
-    # If inner dataset had errors, don't probe the outer - data wouldn't reach it
-    if inner_result is not None:
-        _has_err = any(s.get('errorMessage') for s in inner_result.get('snapshots', []))
-        if _has_err:
-            target_name = str(node._target).split('.')[-1]
-            return {
-                'datasetName': target_name,
-                'datasetTarget': str(node._target),
-                'snapshots': [],
-                'innerResult': inner_result,
-            }
+    target_fqn = str(node._target)
+    target_name = target_fqn.split('.')[-1]
 
-    # Collect transforms config BEFORE stripping them
-    transforms_raw = None
-    transforms_source = None
-    if 'params' in node and node.params is not None and 'transforms' in node.params:
-        transforms_val = node.params.transforms
-        if isinstance(transforms_val, str) and re.match(r'^%\{.+\}$', transforms_val.strip()):
-            ref_path = re.match(r'^%\{(.+)\}$', transforms_val.strip()).group(1).strip()
-            transforms_source = ref_path
-        else:
-            transforms_raw = OmegaConf.to_container(transforms_val, resolve=True)
-    elif 'transforms' in node:
-        transforms_val = node.transforms
-        if isinstance(transforms_val, str) and re.match(r'^%\{.+\}$', transforms_val.strip()):
-            ref_path = re.match(r'^%\{(.+)\}$', transforms_val.strip()).group(1).strip()
-            transforms_source = ref_path
-        else:
-            transforms_raw = OmegaConf.to_container(transforms_val, resolve=True)
+    # If inner dataset had errors, skip outer dataset
+    if inner_had_errors:
+        _emit({
+            'type': 'dataset_start',
+            'datasetName': target_name,
+            'datasetTarget': target_fqn,
+            'datasetPath': path,
+        })
+        _emit({'type': 'skipped', 'reason': 'Inner dataset pipeline failed'})
+        _emit({'type': 'dataset_end', 'datasetPath': path})
+        return True
 
-    # Strip transforms and neutralize cache before instantiation
-    with open_dict(node):
-        saved_transforms = None
-        saved_transforms_location = None
-        saved_cache = {}
-        if 'params' in node and node.params is not None:
-            # Strip transforms so __getitem__ doesn't auto-apply them
-            if 'transforms' in node.params:
-                saved_transforms = node.params.transforms
-                saved_transforms_location = 'params'
-                node.params.transforms = None
-            # Neutralize cache: never delete or write to cache dirs
-            if 'cache_dir' in node.params:
-                saved_cache['cache_dir'] = node.params.cache_dir
-                node.params.cache_dir = None
-            if 'recache' in node.params:
-                saved_cache['recache'] = node.params.recache
-                node.params.recache = False
-        if saved_transforms is None and 'transforms' in node:
-            saved_transforms = node.transforms
-            saved_transforms_location = 'node'
-            node.transforms = None
-
-    # Use a fresh ConfigResolver so cached instances from inner probing
-    # (which had transforms stripped) don't leak into the outer dataset.
-    from srforge.config import ConfigResolver as _CR
-    dataset = _CR(resolver.config)(node)
-    target_name = str(node._target).split('.')[-1]
-
-    # Restore original config values
-    with open_dict(node):
-        if saved_transforms is not None:
-            if saved_transforms_location == 'params':
-                node.params.transforms = saved_transforms
-            else:
-                node.transforms = saved_transforms
-        if 'params' in node and node.params is not None:
-            for k, v in saved_cache.items():
-                node.params[k] = v
-
-    # Get first entry (without transforms since we stripped them)
-    entry = dataset[0]
-    snapshots = [_snapshot_entry(entry, target_name, 0)]
-
-    # Apply transforms one by one
-    if transforms_source is not None:
-        # Resolve %{...} reference via ConfigResolver
-        resolved = resolver._resolve_path(transforms_source)
-        transforms = list(resolved) if isinstance(resolved, (list, tuple)) else [resolved]
-        for i, transform in enumerate(transforms):
-            t_name = type(transform).__name__
-            try:
-                entry = transform(entry)
-                snapshots.append(_snapshot_entry(entry, t_name, i + 1))
-            except Exception as e:
-                snapshots.append({
-                    'stepLabel': t_name,
-                    'stepIndex': i + 1,
-                    'fields': [],
-                    'isBatched': False,
-                    'errorMessage': str(e),
-                    'errorTraceback': traceback.format_exc(),
-                })
-                break
-    elif transforms_raw is not None:
-        # Instantiate transforms from raw config using ConfigResolver
-        from omegaconf import OmegaConf as _OC
-        for i, t_cfg_raw in enumerate(transforms_raw):
-            try:
-                t_cfg = _OC.create(t_cfg_raw) if isinstance(t_cfg_raw, dict) else t_cfg_raw
-                transform = resolver(t_cfg)
-                t_name = type(transform).__name__
-                entry = transform(entry)
-                snapshots.append(_snapshot_entry(entry, t_name, i + 1))
-            except Exception as e:
-                t_name = t_cfg_raw.get('_target', '?').split('.')[-1] if isinstance(t_cfg_raw, dict) else '?'
-                snapshots.append({
-                    'stepLabel': t_name,
-                    'stepIndex': i + 1,
-                    'fields': [],
-                    'isBatched': False,
-                    'errorMessage': str(e),
-                    'errorTraceback': traceback.format_exc(),
-                })
-                break
-
-    return {
+    _emit({
+        'type': 'dataset_start',
         'datasetName': target_name,
-        'datasetTarget': str(node._target),
-        'snapshots': snapshots,
-        'innerResult': inner_result,
-    }
+        'datasetTarget': target_fqn,
+        'datasetPath': path,
+    })
+
+    # Instantiate the dataset fully — ConfigResolver handles all reference
+    # resolution ({ref:...}, %{...}, inline configs, etc.)
+    # Note: recache was already stripped at config level to prevent shutil.rmtree.
+    from srforge.config import ConfigResolver as _CR
+    try:
+        dataset = _CR(resolver.config)(node)
+    except Exception as e:
+        _emit({
+            'type': 'init_error',
+            'errorMessage': str(e),
+            'errorTraceback': traceback.format_exc(),
+        })
+        _emit({'type': 'dataset_end', 'datasetPath': path})
+        return True
+
+    target_name = type(dataset).__name__
+
+    # Grab transforms from the live instance, then clear them
+    # (Dataset.__getitem__ wrapper reads self._transforms)
+    transforms = list(getattr(dataset, '_transforms', None) or [])
+    dataset._transforms = []
+
+    # Disable caching on the instance and all nested datasets
+    _disable_instance_cache(dataset)
+
+    # Get raw entry (no transforms, no caching)
+    entry = dataset[0]
+    snapshot = _snapshot_entry(entry, target_name, 0)
+    _emit({'type': 'snapshot', **snapshot})
+
+    # Apply saved transforms one by one
+    had_errors = False
+    for i, transform in enumerate(transforms):
+        t_name = type(transform).__name__
+        try:
+            entry = transform(entry)
+            snapshot = _snapshot_entry(entry, t_name, i + 1)
+            _emit({'type': 'snapshot', **snapshot})
+        except Exception as e:
+            _emit({
+                'type': 'step_error',
+                'stepLabel': t_name,
+                'stepIndex': i + 1,
+                'errorMessage': str(e),
+                'errorTraceback': traceback.format_exc(),
+            })
+            had_errors = True
+            break
+
+    _emit({'type': 'dataset_end', 'datasetPath': path})
+    return had_errors
 
 
 # ── Main ────────────────────────────────────────────────────────────
@@ -376,33 +364,20 @@ def main():
     start_time = time.time()
     try:
         cfg = _load_config(probe_config['yamlPath'])
-        result = _probe_dataset(
+        _probe_dataset(
             cfg,
             probe_config['datasetPath'],
             probe_config.get('pathOverrides', {}),
         )
-        elapsed = int((time.time() - start_time) * 1000)
-
-        output = {
-            'success': True,
-            'result': result,
-            'errorMessage': None,
-            'errorTraceback': None,
-            'executionTimeMs': elapsed,
-        }
     except Exception as e:
-        elapsed = int((time.time() - start_time) * 1000)
-        output = {
-            'success': False,
-            'result': None,
+        _emit({
+            'type': 'error',
             'errorMessage': str(e),
             'errorTraceback': traceback.format_exc(),
-            'executionTimeMs': elapsed,
-        }
+        })
 
-    print('===PROBE_RESULT_BEGIN===')
-    print(json.dumps(output, indent=2, default=str))
-    print('===PROBE_RESULT_END===')
+    elapsed = int((time.time() - start_time) * 1000)
+    _emit({'type': 'complete', 'executionTimeMs': elapsed})
 
 
 if __name__ == '__main__':

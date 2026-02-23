@@ -152,6 +152,11 @@ object YamlPipelineParser {
             ?.firstOrNull { it.keyText == "root" }
             ?.let { (it.value as? YAMLScalar)?.textValue }
 
+        // Find cache directory
+        val cacheDir = paramsMapping?.keyValues
+            ?.firstOrNull { it.keyText == "cache_dir" }
+            ?.let { (it.value as? YAMLScalar)?.textValue }
+
         // Find wrapped dataset inside params
         val wrappedDataset = findWrappedDataset(paramsMapping, path, text, project)
 
@@ -166,6 +171,7 @@ object YamlPipelineParser {
             transforms = transforms,
             wrappedDataset = wrappedDataset,
             dataRoot = dataRoot,
+            cacheDir = cacheDir,
             yamlOffset = mapping.textOffset
         )
     }
@@ -214,7 +220,8 @@ object YamlPipelineParser {
     /**
      * Parse a transforms value, which may be:
      * - A YAML sequence (inline list of transforms)
-     * - A scalar containing an interpolation reference like %{preprocessing.training}
+     * - A scalar containing an interpolation reference like "%{preprocessing.training}"
+     * - A mapping containing a {ref: path} shorthand reference
      */
     private fun parseTransformsValue(value: YAMLValue?, text: String): List<TransformStep> {
         if (value == null) return emptyList()
@@ -223,14 +230,25 @@ object YamlPipelineParser {
             is YAMLSequence -> return parseTransformSequence(value)
             is YAMLScalar -> {
                 val scalarText = value.textValue.trim()
-                // Check for interpolation reference
                 val interpMatch = Regex("""^[%$]\{([^}]+)}$""").matchEntire(scalarText)
                 if (interpMatch != null) {
                     val refPath = interpMatch.groupValues[1].trim()
-                    // Try to resolve the reference via PSI navigation
                     val resolved = resolveInterpolationToPsi(refPath, value)
                     if (resolved is YAMLSequence) {
                         return parseTransformSequence(resolved)
+                    }
+                }
+            }
+            is YAMLMapping -> {
+                // {ref: path} shorthand reference
+                val refKv = value.keyValues.singleOrNull()
+                if (refKv != null && refKv.keyText == "ref") {
+                    val refPath = (refKv.value as? YAMLScalar)?.textValue?.trim()
+                    if (refPath != null) {
+                        val resolved = resolveInterpolationToPsi(refPath, value)
+                        if (resolved is YAMLSequence) {
+                            return parseTransformSequence(resolved)
+                        }
                     }
                 }
             }
@@ -302,7 +320,7 @@ object YamlPipelineParser {
      * Resolve an interpolation reference (e.g., "preprocessing.training") to the
      * PSI node it points to, by walking the YAML document structure.
      */
-    private fun resolveInterpolationToPsi(path: String, context: YAMLScalar): YAMLValue? {
+    private fun resolveInterpolationToPsi(path: String, context: YAMLValue): YAMLValue? {
         val file = context.containingFile as? YAMLFile ?: return null
         val documents = file.documents
         if (documents.isEmpty()) return null

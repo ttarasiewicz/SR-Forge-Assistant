@@ -4,6 +4,8 @@ import com.intellij.icons.AllIcons
 import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.WriteIntentReadAction
+import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.Task
@@ -34,7 +36,7 @@ data class ProbeRunConfig(
 /**
  * Main panel for the Pipeline Probe tool window.
  * Displays a block-based flow diagram with expandable step and field blocks.
- * Includes Re-run and Configure buttons in the header toolbar.
+ * Renders blocks incrementally as streaming events arrive from the probe script.
  */
 class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()) {
 
@@ -62,6 +64,7 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
     var lastRunConfig: ProbeRunConfig? = null
         private set
 
+
     init {
         val headerPanel = JPanel(BorderLayout()).apply {
             border = JBUI.Borders.empty(6, 12, 6, 8)
@@ -79,40 +82,113 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
         add(scrollPane, BorderLayout.CENTER)
     }
 
+    // ── Streaming execution ────────────────────────────────────────────
+
     /**
-     * Store the run config (called by [PipelineProbeAction] after launching a probe)
-     * and display the result.
+     * Launch a probe execution with streaming UI updates.
+     * Called by both [PipelineProbeAction] and internal re-run/configure.
      */
-    fun displayResult(result: ProbeExecutionResult, config: ProbeRunConfig? = null) {
-        if (config != null) {
-            lastRunConfig = config
-            rerunButton.isEnabled = true
-        }
-
+    fun executeProbe(script: String, configJson: String, config: ProbeRunConfig) {
+        lastRunConfig = config
+        rerunButton.isEnabled = false
+        headerLabel.text = "Running probe..."
+        headerLabel.icon = null
         contentPanel.removeAll()
-
-        if (result.result != null) {
-            // Show partial or full results — even if success=false, we display
-            // whatever steps completed before the error
-            val hasErrors = hasSnapshotErrors(result.result)
-            if (hasErrors) {
-                headerLabel.text = "Pipeline probe failed at step (${result.executionTimeMs}ms)"
-                headerLabel.icon = UIUtil.getErrorIcon()
-            } else {
-                headerLabel.text = "Pipeline probe completed in ${result.executionTimeMs}ms"
-                headerLabel.icon = ProbeIcons.Probe
-            }
-            displayDatasetResult(result.result)
-        } else {
-            displayError(result)
-        }
-
         contentPanel.revalidate()
         contentPanel.repaint()
 
-        SwingUtilities.invokeLater {
-            scrollPane.verticalScrollBar.value = 0
+        // Build path→DatasetNode map for cache dir lookup on dataset_end
+        val nodeMap = buildNodeMap(config.pipeline)
+
+        // Streaming state — mutated on EDT by the onEvent callback
+        var lastSnapshot: EntrySnapshot? = null
+        var hasErrors = false
+
+        val onEvent: (ProbeEvent) -> Unit = { event ->
+            when (event) {
+                is ProbeEvent.DatasetStart -> {
+                    addDatasetBlock(event.datasetName, event.datasetTarget)
+                }
+                is ProbeEvent.Snapshot -> {
+                    val snapshot = event.snapshot
+                    val diffs = if (lastSnapshot != null) {
+                        computeDiffs(lastSnapshot!!, snapshot)
+                    } else {
+                        snapshot.fields.map { f ->
+                            val childDiffs = f.children?.map { c ->
+                                FieldDiff(c.key, FieldDiffStatus.UNCHANGED, null, c)
+                            }
+                            FieldDiff(f.key, FieldDiffStatus.UNCHANGED, null, f, childDiffs)
+                        }
+                    }
+                    addConnector(null)
+                    addStepBlock(snapshot, diffs)
+                    lastSnapshot = snapshot
+                }
+                is ProbeEvent.StepError -> {
+                    hasErrors = true
+                    val errorSnapshot = EntrySnapshot(
+                        stepLabel = event.stepLabel,
+                        stepIndex = event.stepIndex,
+                        fields = emptyList(),
+                        isBatched = false,
+                    )
+                    addConnector(null)
+                    addErrorStepBlock(errorSnapshot, event.errorMessage, event.errorTraceback)
+                }
+                is ProbeEvent.InitError -> {
+                    hasErrors = true
+                    addInitErrorBlock(event.errorMessage, event.errorTraceback)
+                }
+                is ProbeEvent.Connector -> {
+                    // Reset lastSnapshot at dataset boundary — outer dataset diffs
+                    // against its own first snapshot, not the inner dataset's last step
+                    lastSnapshot = null
+                    addConnector(event.label)
+                }
+                is ProbeEvent.Skipped -> {
+                    hasErrors = true
+                    addSkippedNotice()
+                }
+                is ProbeEvent.DatasetEnd -> {
+                    val node = nodeMap[event.datasetPath]
+                    val cacheDir = node?.cacheDir
+                    if (cacheDir != null) {
+                        addConnector(null)
+                        addCacheBlock(cacheDir)
+                    }
+                }
+                is ProbeEvent.Complete -> {
+                    if (hasErrors) {
+                        headerLabel.text = "Pipeline probe failed at step (${event.executionTimeMs}ms)"
+                        headerLabel.icon = UIUtil.getErrorIcon()
+                    } else {
+                        headerLabel.text = "Pipeline probe completed in ${event.executionTimeMs}ms"
+                        headerLabel.icon = ProbeIcons.Probe
+                    }
+                    rerunButton.isEnabled = lastRunConfig != null
+                }
+                is ProbeEvent.Error -> {
+                    hasErrors = true
+                    addTopLevelErrorBlock(event.errorMessage, event.errorTraceback)
+                }
+            }
+
+            contentPanel.revalidate()
+            contentPanel.repaint()
+
+            // Auto-scroll to bottom
+            SwingUtilities.invokeLater {
+                val vsb = scrollPane.verticalScrollBar
+                vsb.value = vsb.maximum
+            }
         }
+
+        object : Task.Backgroundable(project, "Running Pipeline Probe...", true) {
+            override fun run(indicator: ProgressIndicator) {
+                ProbeExecutor.executeStreaming(project, script, configJson, indicator, onEvent)
+            }
+        }.queue()
     }
 
     // ── Re-run ──────────────────────────────────────────────────────────
@@ -120,21 +196,43 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
     private fun rerunProbe() {
         val config = lastRunConfig ?: return
 
+        // Save all documents so the Python probe reads the latest content from disk
+        ApplicationManager.getApplication().invokeAndWait {
+            WriteIntentReadAction.run { FileDocumentManager.getInstance().saveAllDocuments() }
+        }
+
+        // Re-parse the YAML to pick up any edits since the last run
+        val freshConfig = com.intellij.openapi.application.ReadAction.compute<ProbeRunConfig?, Throwable> {
+            val vf = com.intellij.openapi.vfs.LocalFileSystem.getInstance()
+                .findFileByPath(config.yamlFilePath) ?: return@compute null
+            val yamlFile = PsiManager.getInstance(project).findFile(vf) as? YAMLFile
+                ?: return@compute null
+            val datasets = YamlPipelineParser.findDatasetNodes(yamlFile, project)
+            val freshNode = datasets.firstOrNull { it.first == config.datasetPath }?.second
+                ?: return@compute null
+            config.copy(pipeline = freshNode)
+        } ?: config
+
         val script = ProbeScriptGenerator.loadScript()
         val configJson = ProbeScriptGenerator.generateConfig(
-            yamlFilePath = config.yamlFilePath,
-            datasetPath = config.datasetPath,
-            pipeline = config.pipeline,
-            pathOverrides = config.pathOverrides,
-            projectPaths = config.projectPaths
+            yamlFilePath = freshConfig.yamlFilePath,
+            datasetPath = freshConfig.datasetPath,
+            pipeline = freshConfig.pipeline,
+            pathOverrides = freshConfig.pathOverrides,
+            projectPaths = freshConfig.projectPaths
         )
 
-        executeProbe(script, configJson, config)
+        executeProbe(script, configJson, freshConfig)
     }
 
     // ── Configure & Run ─────────────────────────────────────────────────
 
     private fun configureAndRun() {
+        // Save all documents so the Python probe reads the latest content from disk
+        ApplicationManager.getApplication().invokeAndWait {
+            WriteIntentReadAction.run { FileDocumentManager.getInstance().saveAllDocuments() }
+        }
+
         // PSI access requires a read action
         val (yamlFile, datasets) = com.intellij.openapi.application.ReadAction.compute<Pair<YAMLFile?, List<Pair<String, DatasetNode>>>, Throwable> {
             val file = findYamlFile()
@@ -191,22 +289,7 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
         executeProbe(script, configJson, config)
     }
 
-    // ── Shared execution ────────────────────────────────────────────────
-
-    private fun executeProbe(script: String, configJson: String, config: ProbeRunConfig) {
-        rerunButton.isEnabled = false
-        headerLabel.text = "Running probe..."
-        headerLabel.icon = null
-
-        object : Task.Backgroundable(project, "Running Pipeline Probe...", true) {
-            override fun run(indicator: ProgressIndicator) {
-                val result = ProbeExecutor.execute(project, script, configJson, indicator)
-                ApplicationManager.getApplication().invokeLater {
-                    displayResult(result, config)
-                }
-            }
-        }.queue()
-    }
+    // ── Helpers ──────────────────────────────────────────────────────────
 
     private fun findYamlFile(): YAMLFile? {
         // Try the last run's file first
@@ -232,73 +315,9 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
         }
     }
 
-    // ── Result visualization ────────────────────────────────────────────
+    // ── Block rendering ────────────────────────────────────────────────
 
-    /**
-     * Display a dataset result and return its last snapshot,
-     * so a wrapping dataset can diff against it.
-     */
-    private fun displayDatasetResult(
-        result: DatasetProbeResult,
-        previousSnapshot: EntrySnapshot? = null
-    ): EntrySnapshot? {
-        var innerLastSnapshot: EntrySnapshot? = previousSnapshot
-        if (result.innerResult != null) {
-            innerLastSnapshot = displayDatasetResult(result.innerResult, previousSnapshot)
-            addConnector("Wrapped by ${result.datasetName}")
-        }
-
-        // Dataset block
-        addDatasetBlock(result)
-
-        // If inner pipeline failed, this dataset was never reached — show skip notice
-        val snapshots = result.snapshots
-        if (snapshots.isEmpty() && result.innerResult != null && hasSnapshotErrors(result.innerResult)) {
-            addSkippedNotice()
-            return null
-        }
-
-        // Step blocks
-        for (i in snapshots.indices) {
-            val snapshot = snapshots[i]
-
-            // Error snapshot — render as an error block
-            if (snapshot.errorMessage != null) {
-                addConnector(null)
-                addErrorStepBlock(snapshot)
-                continue
-            }
-
-            val diffs = if (i > 0) {
-                // Find the previous NON-error snapshot for diffing
-                val prevSnapshot = snapshots.take(i).lastOrNull { it.errorMessage == null }
-                if (prevSnapshot != null) computeDiffs(prevSnapshot, snapshot) else {
-                    snapshot.fields.map { f ->
-                        val childDiffs = f.children?.map { c ->
-                            FieldDiff(c.key, FieldDiffStatus.UNCHANGED, null, c)
-                        }
-                        FieldDiff(f.key, FieldDiffStatus.UNCHANGED, null, f, childDiffs)
-                    }
-                }
-            } else if (innerLastSnapshot != null) {
-                computeDiffs(innerLastSnapshot, snapshot)
-            } else {
-                snapshot.fields.map { f ->
-                    val childDiffs = f.children?.map { c ->
-                        FieldDiff(c.key, FieldDiffStatus.UNCHANGED, null, c)
-                    }
-                    FieldDiff(f.key, FieldDiffStatus.UNCHANGED, null, f, childDiffs)
-                }
-            }
-
-            addConnector(null)
-            addStepBlock(snapshot, diffs)
-        }
-
-        return snapshots.lastOrNull { it.errorMessage == null }
-    }
-
-    private fun addDatasetBlock(result: DatasetProbeResult) {
+    private fun addDatasetBlock(name: String, target: String) {
         val block = object : JPanel(BorderLayout()) {
             override fun paintComponent(g: Graphics) {
                 val g2 = g as Graphics2D
@@ -314,7 +333,7 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
             alignmentX = Component.LEFT_ALIGNMENT
         }
 
-        val nameLabel = JBLabel(result.datasetName).apply {
+        val nameLabel = JBLabel(name).apply {
             foreground = Color.WHITE
             font = font.deriveFont(Font.BOLD, font.size + 2f)
             icon = ProbeIcons.Probe
@@ -322,11 +341,40 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
         }
         block.add(nameLabel, BorderLayout.WEST)
 
-        val targetLabel = JBLabel(result.datasetTarget).apply {
+        val targetLabel = JBLabel(target).apply {
             foreground = JBColor(Color(0xBBDEFB), Color(0x90CAF9))
             font = font.deriveFont(font.size - 1f)
         }
         block.add(targetLabel, BorderLayout.EAST)
+
+        contentPanel.add(block)
+    }
+
+    private fun addCacheBlock(cacheDir: String) {
+        val block = object : JPanel(BorderLayout()) {
+            override fun paintComponent(g: Graphics) {
+                val g2 = g as Graphics2D
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+                g2.color = background
+                g2.fillRoundRect(0, 0, width, height, JBUI.scale(8), JBUI.scale(8))
+                g2.color = CACHE_BLOCK_BORDER
+                g2.drawRoundRect(0, 0, width - 1, height - 1, JBUI.scale(8), JBUI.scale(8))
+            }
+        }.apply {
+            isOpaque = false
+            background = CACHE_BLOCK_BG
+            border = JBUI.Borders.empty(8, 14)
+            maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(40))
+            alignmentX = Component.LEFT_ALIGNMENT
+        }
+
+        val label = JBLabel("Cached \u2192 $cacheDir").apply {
+            foreground = JBColor(Color(0x004D40), Color(0xB2DFDB))
+            font = font.deriveFont(Font.BOLD)
+            icon = AllIcons.Actions.Lightning
+            iconTextGap = JBUI.scale(6)
+        }
+        block.add(label, BorderLayout.WEST)
 
         contentPanel.add(block)
     }
@@ -420,7 +468,7 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
         contentPanel.add(block)
     }
 
-    private fun addErrorStepBlock(snapshot: EntrySnapshot) {
+    private fun addErrorStepBlock(snapshot: EntrySnapshot, errorMessage: String, errorTraceback: String?) {
         val block = object : JPanel() {
             override fun paintComponent(g: Graphics) {
                 val g2 = g as Graphics2D
@@ -464,21 +512,85 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
 
         // Error message
         block.add(Box.createVerticalStrut(JBUI.scale(6)))
-        block.add(JBLabel(snapshot.errorMessage ?: "Unknown error").apply {
+        block.add(JBLabel(errorMessage).apply {
             foreground = JBColor(Color(0xC62828), Color(0xEF5350))
             alignmentX = Component.LEFT_ALIGNMENT
         })
 
         // Traceback (collapsible)
-        if (snapshot.errorTraceback != null) {
-            block.add(Box.createVerticalStrut(JBUI.scale(6)))
-            val tracePanel = JPanel().apply {
-                layout = BoxLayout(this, BoxLayout.Y_AXIS)
-                isOpaque = false
-                alignmentX = Component.LEFT_ALIGNMENT
-                isVisible = false
+        addTracebackToggle(block, errorTraceback)
+
+        contentPanel.add(block)
+    }
+
+    private fun addInitErrorBlock(errorMessage: String, errorTraceback: String?) {
+        val block = object : JPanel() {
+            override fun paintComponent(g: Graphics) {
+                val g2 = g as Graphics2D
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+                g2.color = ERROR_BLOCK_BG
+                g2.fillRoundRect(0, 0, width, height, JBUI.scale(8), JBUI.scale(8))
+                g2.color = ERROR_BLOCK_BORDER
+                g2.drawRoundRect(0, 0, width - 1, height - 1, JBUI.scale(8), JBUI.scale(8))
             }
-            val traceArea = JTextArea(snapshot.errorTraceback).apply {
+        }.apply {
+            layout = BoxLayout(this, BoxLayout.Y_AXIS)
+            isOpaque = false
+            border = JBUI.Borders.empty(10, 12)
+            alignmentX = Component.LEFT_ALIGNMENT
+            maximumSize = Dimension(Int.MAX_VALUE, Int.MAX_VALUE)
+        }
+
+        val headerRow = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
+            isOpaque = false
+            alignmentX = Component.LEFT_ALIGNMENT
+        }
+        headerRow.add(JBLabel(UIUtil.getErrorIcon()).apply {
+            border = JBUI.Borders.emptyRight(6)
+        })
+        headerRow.add(JBLabel("Instantiation failed").apply {
+            font = font.deriveFont(Font.BOLD, font.size + 1f)
+            foreground = JBColor(Color(0xC62828), Color(0xEF5350))
+        })
+        block.add(headerRow)
+
+        block.add(Box.createVerticalStrut(JBUI.scale(6)))
+        block.add(JBLabel(errorMessage).apply {
+            foreground = JBColor(Color(0xC62828), Color(0xEF5350))
+            alignmentX = Component.LEFT_ALIGNMENT
+        })
+
+        addTracebackToggle(block, errorTraceback)
+
+        contentPanel.add(block)
+    }
+
+    private fun addTopLevelErrorBlock(errorMessage: String, errorTraceback: String?) {
+        val block = object : JPanel() {
+            override fun paintComponent(g: Graphics) {
+                val g2 = g as Graphics2D
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+                g2.color = JBColor(Color(0xFFEBEE), Color(0x3B1B1B))
+                g2.fillRoundRect(0, 0, width, height, JBUI.scale(8), JBUI.scale(8))
+                g2.color = JBColor(Color(0xEF9A9A), Color(0xC62828))
+                g2.drawRoundRect(0, 0, width - 1, height - 1, JBUI.scale(8), JBUI.scale(8))
+            }
+        }.apply {
+            layout = BoxLayout(this, BoxLayout.Y_AXIS)
+            isOpaque = false
+            border = JBUI.Borders.empty(12)
+            alignmentX = Component.LEFT_ALIGNMENT
+        }
+
+        block.add(JBLabel(errorMessage).apply {
+            foreground = JBColor(Color(0xC62828), Color(0xEF5350))
+            font = font.deriveFont(Font.BOLD)
+            alignmentX = Component.LEFT_ALIGNMENT
+        })
+
+        if (errorTraceback != null) {
+            block.add(Box.createVerticalStrut(JBUI.scale(8)))
+            val traceArea = JTextArea(errorTraceback).apply {
                 isEditable = false
                 font = Font(Font.MONOSPACED, Font.PLAIN, UIUtil.getFontSize(UIUtil.FontSize.SMALL).toInt())
                 foreground = UIUtil.getInactiveTextColor()
@@ -494,24 +606,7 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
                 isOpaque = false
                 viewport.isOpaque = false
             }
-            tracePanel.add(scrollable)
-
-            val toggleLabel = JBLabel("Show traceback \u25B8").apply {
-                foreground = UIUtil.getInactiveTextColor()
-                font = font.deriveFont(font.size - 1f)
-                cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-                alignmentX = Component.LEFT_ALIGNMENT
-            }
-            toggleLabel.addMouseListener(object : MouseAdapter() {
-                override fun mouseClicked(e: MouseEvent) {
-                    tracePanel.isVisible = !tracePanel.isVisible
-                    toggleLabel.text = if (tracePanel.isVisible) "Hide traceback \u25BE" else "Show traceback \u25B8"
-                    block.revalidate()
-                    block.repaint()
-                }
-            })
-            block.add(toggleLabel)
-            block.add(tracePanel)
+            block.add(scrollable)
         }
 
         contentPanel.add(block)
@@ -579,6 +674,53 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
         contentPanel.add(connector)
     }
 
+    /** Adds a collapsible traceback toggle to a block panel. */
+    private fun addTracebackToggle(block: JPanel, errorTraceback: String?) {
+        if (errorTraceback == null) return
+
+        block.add(Box.createVerticalStrut(JBUI.scale(6)))
+        val tracePanel = JPanel().apply {
+            layout = BoxLayout(this, BoxLayout.Y_AXIS)
+            isOpaque = false
+            alignmentX = Component.LEFT_ALIGNMENT
+            isVisible = false
+        }
+        val traceArea = JTextArea(errorTraceback).apply {
+            isEditable = false
+            font = Font(Font.MONOSPACED, Font.PLAIN, UIUtil.getFontSize(UIUtil.FontSize.SMALL).toInt())
+            foreground = UIUtil.getInactiveTextColor()
+            background = Color(0, 0, 0, 0)
+            isOpaque = false
+            lineWrap = true
+            wrapStyleWord = true
+        }
+        val scrollable = JBScrollPane(traceArea).apply {
+            alignmentX = Component.LEFT_ALIGNMENT
+            maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(200))
+            preferredSize = Dimension(0, JBUI.scale(200))
+            isOpaque = false
+            viewport.isOpaque = false
+        }
+        tracePanel.add(scrollable)
+
+        val toggleLabel = JBLabel("Show traceback \u25B8").apply {
+            foreground = UIUtil.getInactiveTextColor()
+            font = font.deriveFont(font.size - 1f)
+            cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+            alignmentX = Component.LEFT_ALIGNMENT
+        }
+        toggleLabel.addMouseListener(object : MouseAdapter() {
+            override fun mouseClicked(e: MouseEvent) {
+                tracePanel.isVisible = !tracePanel.isVisible
+                toggleLabel.text = if (tracePanel.isVisible) "Hide traceback \u25BE" else "Show traceback \u25B8"
+                block.revalidate()
+                block.repaint()
+            }
+        })
+        block.add(toggleLabel)
+        block.add(tracePanel)
+    }
+
     private fun buildSummaryBadges(diffs: List<FieldDiff>): String {
         val added = diffs.count { it.status == FieldDiffStatus.ADDED }
         val removed = diffs.count { it.status == FieldDiffStatus.REMOVED }
@@ -592,56 +734,6 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
         return parts.joinToString("  ")
     }
 
-    private fun displayError(result: ProbeExecutionResult) {
-        headerLabel.text = "Probe failed"
-        headerLabel.icon = UIUtil.getErrorIcon()
-
-        val errorBlock = object : JPanel() {
-            override fun paintComponent(g: Graphics) {
-                val g2 = g as Graphics2D
-                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-                g2.color = JBColor(Color(0xFFEBEE), Color(0x3B1B1B))
-                g2.fillRoundRect(0, 0, width, height, JBUI.scale(8), JBUI.scale(8))
-                g2.color = JBColor(Color(0xEF9A9A), Color(0xC62828))
-                g2.drawRoundRect(0, 0, width - 1, height - 1, JBUI.scale(8), JBUI.scale(8))
-            }
-        }.apply {
-            layout = BoxLayout(this, BoxLayout.Y_AXIS)
-            isOpaque = false
-            border = JBUI.Borders.empty(12)
-            alignmentX = Component.LEFT_ALIGNMENT
-        }
-
-        errorBlock.add(JBLabel(result.errorMessage ?: "Unknown error").apply {
-            foreground = JBColor(Color(0xC62828), Color(0xEF5350))
-            font = font.deriveFont(Font.BOLD)
-            alignmentX = Component.LEFT_ALIGNMENT
-        })
-
-        if (result.errorTraceback != null) {
-            errorBlock.add(Box.createVerticalStrut(JBUI.scale(8)))
-            val traceArea = JTextArea(result.errorTraceback).apply {
-                isEditable = false
-                font = Font(Font.MONOSPACED, Font.PLAIN, UIUtil.getFontSize(UIUtil.FontSize.SMALL).toInt())
-                foreground = UIUtil.getInactiveTextColor()
-                background = Color(0, 0, 0, 0)
-                isOpaque = false
-                lineWrap = true
-                wrapStyleWord = true
-            }
-            val scrollable = JBScrollPane(traceArea).apply {
-                alignmentX = Component.LEFT_ALIGNMENT
-                maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(200))
-                preferredSize = Dimension(0, JBUI.scale(200))
-                isOpaque = false
-                viewport.isOpaque = false
-            }
-            errorBlock.add(scrollable)
-        }
-
-        contentPanel.add(errorBlock)
-    }
-
     companion object {
         // Elevated surface for step blocks — white in light theme, slightly lighter in dark
         private val STEP_BLOCK_BG = JBColor(Color.WHITE, Color(0x3C3F41))
@@ -651,11 +743,9 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
         private val ERROR_BLOCK_BG = JBColor(Color(0xFFEBEE), Color(0x3B1B1B))
         private val ERROR_BLOCK_BORDER = JBColor(Color(0xEF9A9A), Color(0xC62828))
 
-        /** Check whether any snapshot in the result tree contains an error. */
-        private fun hasSnapshotErrors(result: DatasetProbeResult): Boolean {
-            if (result.snapshots.any { it.errorMessage != null }) return true
-            return result.innerResult?.let { hasSnapshotErrors(it) } == true
-        }
+        // Cache blocks — teal/cyan
+        private val CACHE_BLOCK_BG = JBColor(Color(0xE0F2F1), Color(0x1B3B36))
+        private val CACHE_BLOCK_BORDER = JBColor(Color(0x80CBC4), Color(0x00897B))
 
         fun computeDiffs(before: EntrySnapshot, after: EntrySnapshot): List<FieldDiff> {
             return computeFieldListDiffs(before.fields, after.fields)
@@ -710,6 +800,15 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
                     b.stdValue != a.stdValue ||
                     b.sizeBytes != a.sizeBytes ||
                     b.preview != a.preview
+        }
+
+        /** Build a path→DatasetNode map from a (potentially nested) pipeline node. */
+        private fun buildNodeMap(node: DatasetNode): Map<String, DatasetNode> {
+            val map = mutableMapOf(node.path to node)
+            if (node.wrappedDataset != null) {
+                map.putAll(buildNodeMap(node.wrappedDataset))
+            }
+            return map
         }
     }
 }

@@ -38,7 +38,14 @@ class YamlParamCompletionProvider : CompletionProvider<CompletionParameters>() {
         // Don't suggest param names when we're typing a value
         if (isInValuePosition(position, ctx.paramsMapping)) return
 
+        // We're in a valid _target: params context — suppress IntelliJ's built-in
+        // YAML key suggestions (which would suggest keys from sibling list items).
+        // Must be called before resolveParamsFromTargetMapping so that even if the
+        // target class can't be resolved, sibling keys are still suppressed.
+        result.stopHere()
+
         val allParams = ParamUtils.resolveParamsFromTargetMapping(ctx.targetMapping) ?: return
+
         val existing = ctx.paramsMapping?.let { ParamUtils.existingParamNames(it) } ?: emptySet()
 
         // Strip the dummy identifier from existing names (the caret position has a dummy)
