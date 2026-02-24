@@ -43,6 +43,16 @@ intellijPlatform {
     }
     buildSearchableOptions = false
 
+    pluginVerification {
+        ides {
+            ide("PY", "2024.2.6")
+            ide("PY", "2024.3.6")
+            ide("PY", "2025.1.6")
+            ide("PY", "2025.2.6")
+            ide("PY", "2025.3.3")
+        }
+    }
+
     signing {
         certificateChain = providers.environmentVariable("CERTIFICATE_CHAIN")
         privateKey = providers.environmentVariable("PRIVATE_KEY")
