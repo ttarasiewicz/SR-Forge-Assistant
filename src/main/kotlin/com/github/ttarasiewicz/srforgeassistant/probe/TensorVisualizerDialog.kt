@@ -33,7 +33,8 @@ import javax.swing.filechooser.FileNameExtensionFilter
  */
 class TensorVisualizerDialog(
     private val project: Project,
-    private val field: FieldSnapshot
+    private val field: FieldSnapshot,
+    private val cleanupNpyOnClose: Boolean = false
 ) : DialogWrapper(project, true) {
 
     // ── State ──────────────────────────────────────────────────
@@ -306,9 +307,19 @@ class TensorVisualizerDialog(
             splitPane,
             controlsScroll
         ).apply {
-            resizeWeight = 1.0 // image area gets all extra space
+            resizeWeight = 1.0
             dividerSize = JBUI.scale(5)
-            dividerLocation = JBUI.scale(440)
+            // Dynamically position divider: give controls their preferred height,
+            // clamped so the image always keeps a minimum area.
+            addComponentListener(object : java.awt.event.ComponentAdapter() {
+                override fun componentResized(e: java.awt.event.ComponentEvent?) {
+                    val total = height - dividerSize
+                    val controlsPref = controlsPanel.preferredSize.height + JBUI.scale(8)
+                    val minImage = JBUI.scale(200)
+                    val controlsH = controlsPref.coerceAtMost(total - minImage).coerceAtLeast(JBUI.scale(80))
+                    dividerLocation = total - controlsH
+                }
+            })
         }
         root.add(verticalSplit, BorderLayout.CENTER)
 
@@ -392,6 +403,15 @@ class TensorVisualizerDialog(
             }
         }
         return arrayOf(saveAction)
+    }
+
+    override fun dispose() {
+        super.dispose()
+        if (cleanupNpyOnClose && field.npyPath != null) {
+            try {
+                File(field.npyPath).delete()
+            } catch (_: Exception) { }
+        }
     }
 
     // ── Default Role Assignment ────────────────────────────────

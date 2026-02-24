@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="140" viewBox="0 0 800 140">
+  <defs>
+    <linearGradient id="bg-grad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0d1117"/>
+      <stop offset="50%" stop-color="#1a1a1a"/>
+      <stop offset="100%" stop-color="#2d2d2d"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="transparent"/>
+      <stop offset="50%" stop-color="#c9a84c"/>
+      <stop offset="100%" stop-color="transparent"/>
+    </linearGradient>
+    <clipPath id="rounded">
+      <rect width="800" height="140" rx="12" ry="12"/>
+    </clipPath>
+  </defs>
+  <g clip-path="url(#rounded)">
+    <rect width="800" height="140" fill="url(#bg-grad)"/>
+    <rect x="0" y="134" width="800" height="6" fill="url(#accent)"/>
+    <!-- Icon -->
+    <g transform="translate(40, 30) scale(3.3)">
+      <path fill="#c9a84c" d="M9 5v5c4.03 2.47-.56 4.97-3 6v3h15v-3c-6.41-2.73-3.53-7 1-8V5zM2 6c.81 2.13 2.42 3.5 5 4V6z"/>
+    </g>
+    <!-- Title -->
+    <text x="145" y="68" font-family="'Plus Jakarta Sans', 'JetBrains Mono', 'Fira Code', 'Consolas', monospace" font-size="32" font-weight="700" fill="#e6e1d8" letter-spacing="0.5">SR-Forge Assistant</text>
+    <!-- Subtitle -->
+    <text x="145" y="100" font-family="'Plus Jakarta Sans', 'Inter', 'Segoe UI', sans-serif" font-size="15" fill="#9ca3af" letter-spacing="0.3">Intelligent IDE support for SR-Forge ML framework YAML configurations</text>
+  </g>
+</svg>
