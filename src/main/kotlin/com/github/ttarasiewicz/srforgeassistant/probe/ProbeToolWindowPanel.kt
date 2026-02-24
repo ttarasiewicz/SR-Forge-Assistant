@@ -47,6 +47,9 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
     private val scrollPane = JBScrollPane(contentPanel)
     private val headerLabel = JBLabel("No probe results yet.")
 
+    /** Temp directory for .npy tensor files from the current probe run. */
+    private var tensorTempDir: java.io.File? = null
+
     private val rerunButton = JButton("Re-run").apply {
         icon = AllIcons.Actions.Refresh
         toolTipText = "Re-run the last probe (same dataset and settings)"
@@ -89,6 +92,15 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
      * Called by both [PipelineProbeAction] and internal re-run/configure.
      */
     fun executeProbe(script: String, configJson: String, config: ProbeRunConfig) {
+        cleanupTensorDir()
+        val tDir = createTensorDir()
+
+        // Inject tensorDir into the config JSON
+        val gson = com.google.gson.Gson()
+        val configObj = gson.fromJson(configJson, com.google.gson.JsonObject::class.java)
+        configObj.addProperty("tensorDir", tDir.absolutePath)
+        val enrichedConfigJson = gson.toJson(configObj)
+
         lastRunConfig = config
         rerunButton.isEnabled = false
         headerLabel.text = "Running probe..."
@@ -185,7 +197,7 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
 
         object : Task.Backgroundable(project, "Running Pipeline Probe...", true) {
             override fun run(indicator: ProgressIndicator) {
-                ProbeExecutor.executeStreaming(project, script, configJson, indicator, onEvent)
+                ProbeExecutor.executeStreaming(project, script, enrichedConfigJson, indicator, onEvent)
             }
         }.queue()
     }
@@ -456,7 +468,7 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
                 border = JBUI.Borders.emptyLeft(4)
             })
         } else {
-            val fieldDetail = FieldDetailPanel(diffs)
+            val fieldDetail = FieldDetailPanel(diffs, project)
             fieldDetail.alignmentX = Component.LEFT_ALIGNMENT
             fieldsPanel.add(fieldDetail)
         }
@@ -731,6 +743,28 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
         val total = diffs.size
         parts.add("$total fields")
         return parts.joinToString("  ")
+    }
+
+    override fun removeNotify() {
+        super.removeNotify()
+        cleanupTensorDir()
+    }
+
+    /** Create a fresh temp directory for tensor .npy files. */
+    private fun createTensorDir(): java.io.File {
+        val dir = java.nio.file.Files.createTempDirectory("srforge_probe_tensors_").toFile()
+        tensorTempDir = dir
+        return dir
+    }
+
+    /** Delete the tensor temp directory and all its contents. */
+    private fun cleanupTensorDir() {
+        tensorTempDir?.let { dir ->
+            try {
+                dir.walkBottomUp().forEach { it.delete() }
+            } catch (_: Exception) { }
+        }
+        tensorTempDir = null
     }
 
     companion object {

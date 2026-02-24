@@ -128,5 +128,13 @@
                 text="SR-Forge Settings"
                 icon="AllIcons.General.GearPlain"
                 description="Open SR-Forge Assistant highlight settings"/>
+
+        <action id="SrForgeAssistant.VisualizeTensorDebug"
+                class="com.github.ttarasiewicz.srforgeassistant.probe.VisualizeTensorDebugAction"
+                text="Visualize Tensor"
+                icon="/icons/sr-forge.svg"
+                description="Open tensor visualizer for this variable">
+            <add-to-group group-id="XDebugger.ValueGroup" anchor="last"/>
+        </action>
     </actions>
 </idea-plugin>

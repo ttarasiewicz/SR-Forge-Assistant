@@ -10,6 +10,7 @@ Invoked by the SR-Forge Assistant IntelliJ plugin.
 Usage: python probe_script.py <config.json>
 """
 import sys
+import os
 import re
 import json
 import traceback
@@ -49,7 +50,7 @@ def _load_config(yaml_path):
 
 # ── Snapshot helpers ────────────────────────────────────────────────
 
-def _snapshot_value(v, key, depth=2):
+def _snapshot_value(v, key, depth=2, tensor_dir=None, path_prefix=""):
     """Snapshot a single value with optional children for containers."""
     import torch
     import numpy as np
@@ -62,7 +63,10 @@ def _snapshot_value(v, key, depth=2):
         'meanValue': None, 'stdValue': None,
         'preview': None, 'sizeBytes': None,
         'children': None,
+        'npyPath': None,
     }
+
+    safe_key = re.sub(r'[^\w\-.]', '_', key)
 
     if isinstance(v, torch.Tensor):
         info['shape'] = str(list(v.shape))
@@ -82,6 +86,13 @@ def _snapshot_value(v, key, depth=2):
             info['preview'] = str(flat.tolist())
         except Exception:
             info['preview'] = f'Tensor{list(v.shape)}'
+        if tensor_dir is not None:
+            try:
+                npy_path = os.path.join(tensor_dir, f'{path_prefix}{safe_key}.npy')
+                np.save(npy_path, v.detach().cpu().numpy())
+                info['npyPath'] = npy_path
+            except Exception:
+                pass
 
     elif isinstance(v, np.ndarray):
         info['shape'] = str(list(v.shape))
@@ -100,6 +111,13 @@ def _snapshot_value(v, key, depth=2):
             info['preview'] = str(v.flatten()[:8].tolist())
         except Exception:
             info['preview'] = f'ndarray{list(v.shape)}'
+        if tensor_dir is not None:
+            try:
+                npy_path = os.path.join(tensor_dir, f'{path_prefix}{safe_key}.npy')
+                np.save(npy_path, v)
+                info['npyPath'] = npy_path
+            except Exception:
+                pass
 
     elif isinstance(v, dict):
         info['preview'] = f'dict({len(v)} keys)'
@@ -112,7 +130,12 @@ def _snapshot_value(v, key, depth=2):
         if total_bytes > 0:
             info['sizeBytes'] = total_bytes
         if depth > 0 and len(v) <= 200:
-            info['children'] = [_snapshot_value(dv, str(dk), depth - 1) for dk, dv in v.items()]
+            info['children'] = [
+                _snapshot_value(dv, str(dk), depth - 1,
+                                tensor_dir=tensor_dir,
+                                path_prefix=f'{path_prefix}{safe_key}__')
+                for dk, dv in v.items()
+            ]
 
     elif isinstance(v, (list, tuple)):
         type_name = type(v).__name__
@@ -152,13 +175,19 @@ def _snapshot_value(v, key, depth=2):
                     pass
         if depth > 0:
             limit = min(len(v), 200)
-            children = [_snapshot_value(v[i], f'[{i}]', depth - 1) for i in range(limit)]
+            children = [
+                _snapshot_value(v[i], f'[{i}]', depth - 1,
+                                tensor_dir=tensor_dir,
+                                path_prefix=f'{path_prefix}{safe_key}__')
+                for i in range(limit)
+            ]
             if len(v) > limit:
                 children.append({
                     'key': f'... {len(v) - limit} more', 'pythonType': '',
                     'shape': None, 'dtype': None, 'minValue': None, 'maxValue': None,
                     'meanValue': None, 'stdValue': None,
                     'preview': None, 'sizeBytes': None, 'children': None,
+                    'npyPath': None,
                 })
             info['children'] = children
 
@@ -170,10 +199,15 @@ def _snapshot_value(v, key, depth=2):
     return info
 
 
-def _snapshot_entry(entry, label, step_index):
+def _snapshot_entry(entry, label, step_index, tensor_dir=None):
     """Capture the state of an Entry's fields."""
     keys = sorted(entry.keys()) if hasattr(entry, 'keys') else []
-    fields = [_snapshot_value(entry[key], key) for key in keys]
+    fields = [
+        _snapshot_value(entry[key], key,
+                        tensor_dir=tensor_dir,
+                        path_prefix=f's{step_index}_')
+        for key in keys
+    ]
     return {
         'stepLabel': label,
         'stepIndex': step_index,
@@ -202,7 +236,7 @@ def _apply_overrides(node, overrides):
                         _apply_overrides(child, overrides)
 
 
-def _probe_dataset(cfg, dataset_path, path_overrides):
+def _probe_dataset(cfg, dataset_path, path_overrides, tensor_dir=None):
     """Probe a dataset using SR-Forge's ConfigResolver for instantiation."""
     from omegaconf import DictConfig
 
@@ -223,7 +257,7 @@ def _probe_dataset(cfg, dataset_path, path_overrides):
 
     resolver = ConfigResolver(cfg)
 
-    _probe_node(resolver, node, dataset_path)
+    _probe_node(resolver, node, dataset_path, tensor_dir=tensor_dir)
 
 
 def _strip_recache(node):
@@ -251,7 +285,7 @@ def _disable_instance_cache(dataset):
             _disable_instance_cache(attr)
 
 
-def _probe_node(resolver, node, path):
+def _probe_node(resolver, node, path, tensor_dir=None):
     """Recursively probe a dataset node and its transforms, emitting events.
 
     Strategy: let ConfigResolver instantiate the dataset fully (it handles all
@@ -269,7 +303,8 @@ def _probe_node(resolver, node, path):
         for key in node.params:
             child = node.params[key]
             if isinstance(child, DictConfig) and '_target' in child:
-                inner_had_errors = _probe_node(resolver, child, f'{path}.params.{key}')
+                inner_had_errors = _probe_node(resolver, child, f'{path}.params.{key}',
+                                               tensor_dir=tensor_dir)
                 if not inner_had_errors:
                     target_name = str(node._target).split('.')[-1]
                     _emit({'type': 'connector', 'label': f'Wrapped by {target_name}'})
@@ -324,7 +359,7 @@ def _probe_node(resolver, node, path):
 
     # Get raw entry (no transforms, no caching)
     entry = dataset[0]
-    snapshot = _snapshot_entry(entry, target_name, 0)
+    snapshot = _snapshot_entry(entry, target_name, 0, tensor_dir=tensor_dir)
     _emit({'type': 'snapshot', **snapshot})
 
     # Apply saved transforms one by one
@@ -333,7 +368,7 @@ def _probe_node(resolver, node, path):
         t_name = type(transform).__name__
         try:
             entry = transform(entry)
-            snapshot = _snapshot_entry(entry, t_name, i + 1)
+            snapshot = _snapshot_entry(entry, t_name, i + 1, tensor_dir=tensor_dir)
             _emit({'type': 'snapshot', **snapshot})
         except Exception as e:
             _emit({
@@ -361,6 +396,10 @@ def main():
         if p not in sys.path:
             sys.path.insert(0, p)
 
+    tensor_dir = probe_config.get('tensorDir', None)
+    if tensor_dir:
+        os.makedirs(tensor_dir, exist_ok=True)
+
     start_time = time.time()
     try:
         cfg = _load_config(probe_config['yamlPath'])
@@ -368,6 +407,7 @@ def main():
             cfg,
             probe_config['datasetPath'],
             probe_config.get('pathOverrides', {}),
+            tensor_dir=tensor_dir,
         )
     except Exception as e:
         _emit({
