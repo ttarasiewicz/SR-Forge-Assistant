@@ -282,7 +282,7 @@ Access via **Settings > Tools > SR-Forge Assistant**.
 
 ## Requirements
 
-- **PyCharm Professional** or **IntelliJ IDEA** with the Python plugin
+- **PyCharm** (Community or Professional) or **IntelliJ IDEA** with the Python plugin
 - **Build 242+** (2024.2 or newer)
 - **Python SDK** configured in the project (required for `_target:` resolution)
 - **SR-Forge** installed in the Python environment (required for Pipeline Probe)

@@ -26,7 +26,6 @@ dependencies {
 
         bundledPlugin("org.jetbrains.plugins.yaml")
         bundledPlugin("PythonCore")
-        bundledPlugin("Pythonid")
 
         javaCompiler()
     }
@@ -45,11 +44,12 @@ intellijPlatform {
 
     pluginVerification {
         ides {
+            // PyCharm Professional
             ide("PY", "2024.2.6")
-            ide("PY", "2024.3.6")
-            ide("PY", "2025.1.6")
-            ide("PY", "2025.2.6")
             ide("PY", "2025.3.3")
+            // PyCharm Community (no longer published separately since 2025.3)
+            ide("PC", "2024.2.6")
+            ide("PC", "2025.2.6")
         }
     }
 

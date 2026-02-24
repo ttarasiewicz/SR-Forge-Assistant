@@ -4,7 +4,7 @@
     <vendor>ttarasiewicz</vendor>
 
     <description><![CDATA[
-    Intelligent coding assistant for <a href="https://gitlab.com/tarasiewicztomasz/sr-forge">SR-Forge</a> ML framework YAML configuration files in PyCharm.
+    Intelligent coding assistant for <a href="https://gitlab.com/tarasiewicztomasz/sr-forge">SR-Forge</a> ML framework YAML configuration files in PyCharm and IntelliJ IDEA.
 
     <h3>Features</h3>
     <ul>
@@ -22,8 +22,8 @@
 
     <!-- Platform/module dependencies -->
     <depends>com.intellij.modules.platform</depends>
-    <!-- Python module present in PyCharm & IDEA with Python plugin -->
-    <depends>Pythonid</depends>
+    <!-- Python Community plugin – works in PyCharm CE/Pro and IDEA with Python plugin -->
+    <depends>PythonCore</depends>
     <!-- YAML language plugin -->
     <depends>org.jetbrains.plugins.yaml</depends>
 
