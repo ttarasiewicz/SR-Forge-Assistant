@@ -65,9 +65,11 @@ object ProbeExecutor {
             return
         }
 
-        val scriptFile = Files.createTempFile("srforge_probe_", ".py").toFile()
-        val configFile = Files.createTempFile("srforge_probe_cfg_", ".json").toFile()
+        var scriptFile: java.io.File? = null
+        var configFile: java.io.File? = null
         try {
+            scriptFile = Files.createTempFile("srforge_probe_", ".py").toFile()
+            configFile = Files.createTempFile("srforge_probe_cfg_", ".json").toFile()
             scriptFile.writeText(scriptContent, StandardCharsets.UTF_8)
             configFile.writeText(configJson, StandardCharsets.UTF_8)
 
@@ -131,8 +133,8 @@ object ProbeExecutor {
             ))
             emitOnEdt(onEvent, ProbeEvent.Complete(0))
         } finally {
-            scriptFile.delete()
-            configFile.delete()
+            scriptFile?.delete()
+            configFile?.delete()
         }
     }
 

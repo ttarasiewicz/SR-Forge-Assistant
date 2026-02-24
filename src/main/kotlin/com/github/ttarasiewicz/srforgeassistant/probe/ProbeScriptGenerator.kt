@@ -16,7 +16,7 @@ object ProbeScriptGenerator {
         return ProbeScriptGenerator::class.java
             .getResourceAsStream("/probe/probe_script.py")!!
             .bufferedReader()
-            .readText()
+            .use { it.readText() }
     }
 
     /**
