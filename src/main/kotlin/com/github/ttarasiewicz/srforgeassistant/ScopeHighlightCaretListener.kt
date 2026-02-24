@@ -51,17 +51,20 @@ class ScopeHighlightCaretListener : CaretListener, DocumentListener {
         // Defer to after the write action completes so PSI is committed
         ApplicationManager.getApplication().invokeLater {
             for (editor in EditorFactory.getInstance().getEditors(doc)) {
+                if (editor.isDisposed) continue
                 refreshHighlights(editor)
             }
         }
     }
 
     fun refreshHighlights(editor: Editor) {
+        if (editor.isDisposed) return
         val doc = editor.document
         val file = FileDocumentManager.getInstance().getFile(doc) ?: return
         if (!file.name.endsWith(".yaml") && !file.name.endsWith(".yml")) return
 
         val project = editor.project ?: return
+        if (project.isDisposed) return
         val settings = SrForgeHighlightSettings.getInstance()
         val caretOffset = editor.caretModel.offset
         val caretColumn = editor.caretModel.logicalPosition.column

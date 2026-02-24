@@ -141,9 +141,8 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
                     addInitErrorBlock(event.errorMessage, event.errorTraceback)
                 }
                 is ProbeEvent.Connector -> {
-                    // Reset lastSnapshot at dataset boundary — outer dataset diffs
-                    // against its own first snapshot, not the inner dataset's last step
-                    lastSnapshot = null
+                    // Keep lastSnapshot so the outer dataset's first snapshot
+                    // diffs against the inner dataset's last step
                     addConnector(event.label)
                 }
                 is ProbeEvent.Skipped -> {
