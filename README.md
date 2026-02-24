@@ -61,7 +61,7 @@
 > Everything related to `_target:` FQN values and their `params:` mappings.
 
 <details open>
-<summary><h3><code>_target:</code> FQN Completion</h3></summary>
+<summary><b><code>_target:</code> FQN Completion</b></summary>
 
 Fuzzy-search Python classes and functions by fully qualified name. A dot (`.`) auto-triggers the popup for the next path segment &mdash; no need to press <kbd>Ctrl</kbd>+<kbd>Space</kbd> repeatedly.
 
@@ -69,7 +69,7 @@ Fuzzy-search Python classes and functions by fully qualified name. A dot (`.`) a
 </details>
 
 <details open>
-<summary><h3>Parameter Name Completion</h3></summary>
+<summary><b>Parameter Name Completion</b></summary>
 
 Inside a `params:` block, get suggestions from the resolved class's `__init__` signature. Already-present parameters are automatically excluded.
 
@@ -77,7 +77,7 @@ Inside a `params:` block, get suggestions from the resolved class's `__init__` s
 </details>
 
 <details open>
-<summary><h3>Go-to-Definition</h3></summary>
+<summary><b>Go-to-Definition</b></summary>
 
 <kbd>Ctrl</kbd>+<kbd>Click</kbd> (or <kbd>Ctrl</kbd>+<kbd>B</kbd>) on any `_target:` value to jump straight to the Python class or function definition.
 
@@ -85,7 +85,7 @@ Inside a `params:` block, get suggestions from the resolved class's `__init__` s
 </details>
 
 <details open>
-<summary><h3>Hover Documentation</h3></summary>
+<summary><b>Hover Documentation</b></summary>
 
 Hover over `_target:` values to see the class/function docstring and full signature. Hover over parameter keys inside `params:` to see their type, default value, and description.
 
@@ -93,7 +93,7 @@ Hover over `_target:` values to see the class/function docstring and full signat
 </details>
 
 <details open>
-<summary><h3>Parameter Stub Generation</h3></summary>
+<summary><b>Parameter Stub Generation</b></summary>
 
 One-click insertion of missing parameters. Available via:
 - **Gutter icon** on `_target:` lines &mdash; click to insert all missing parameter stubs at once
@@ -105,7 +105,7 @@ Default values are used where available, `null` otherwise.
 </details>
 
 <details open>
-<summary><h3>Missing Required Parameters Inspection</h3></summary>
+<summary><b>Missing Required Parameters Inspection</b></summary>
 
 Warning when required `__init__` parameters (those without defaults) are missing from `params:`. A quick-fix inserts them automatically.
 
@@ -113,7 +113,7 @@ Warning when required `__init__` parameters (those without defaults) are missing
 </details>
 
 <details open>
-<summary><h3>Unknown Parameter Name Inspection</h3></summary>
+<summary><b>Unknown Parameter Name Inspection</b></summary>
 
 Catches typos in parameter keys. Flags unknown names and suggests the closest match by edit distance with a one-click rename quick-fix.
 
@@ -127,7 +127,7 @@ Catches typos in parameter keys. Flags unknown names and suggests the closest ma
 > Completion, folding, validation, and chaining for `${...}` and `${ref:...}` expressions.
 
 <details open>
-<summary><h3>Path Completion</h3></summary>
+<summary><b>Path Completion</b></summary>
 
 Segment-by-segment key path completion inside interpolation expressions. At each `.`, the popup shows direct children of the resolved node with value previews and type icons (mapping, sequence, scalar). Supports both dot notation (`list.0.key`) and bracket notation (`list[0].key`).
 
@@ -135,7 +135,7 @@ Segment-by-segment key path completion inside interpolation expressions. At each
 </details>
 
 <details open>
-<summary><h3>Code Folding</h3></summary>
+<summary><b>Code Folding</b></summary>
 
 Interpolation expressions are resolved against the YAML document and displayed as fold placeholders. Folds collapse automatically on file open and can be toggled individually or all at once via the toolbar.
 
@@ -143,7 +143,7 @@ Interpolation expressions are resolved against the YAML document and displayed a
 </details>
 
 <details open>
-<summary><h3>Reference Validation</h3></summary>
+<summary><b>Reference Validation</b></summary>
 
 Unresolvable interpolation paths are flagged with an error annotation. Unknown resolver prefixes are also detected.
 
@@ -151,7 +151,7 @@ Unresolvable interpolation paths are flagged with an error annotation. Unknown r
 </details>
 
 <details open>
-<summary><h3>Post-Interpolation Method Completion</h3></summary>
+<summary><b>Post-Interpolation Method Completion</b></summary>
 
 After an interpolation reference like `${ref:model}`, type `.` to get method and attribute completions from the resolved Python class.
 
@@ -163,7 +163,7 @@ After an interpolation reference like `${ref:model}`, type `.` to get method and
 ## :art: Visual Aids
 
 <details open>
-<summary><h3>Scope Highlighting</h3></summary>
+<summary><b>Scope Highlighting</b></summary>
 
 The current `_target:` block gets a subtle background shading, and the parent key is rendered in bold &mdash; making it easy to see which block you're editing in deeply nested configs. Colors adapt to light and dark themes.
 
@@ -171,7 +171,7 @@ The current `_target:` block gets a subtle background shading, and the parent ke
 </details>
 
 <details open>
-<summary><h3>SR-Forge Editor Toolbar</h3></summary>
+<summary><b>SR-Forge Editor Toolbar</b></summary>
 
 A toolbar appears at the top of YAML files with quick-access buttons:
 
@@ -193,7 +193,7 @@ A toolbar appears at the top of YAML files with quick-access buttons:
 <!-- > **Screenshot:** `probe-overview.png` -->
 
 <details open>
-<summary><h3>Usage</h3></summary>
+<summary><b>Usage</b></summary>
 
 1. Open a YAML config file containing dataset definitions with `_target:` values
 2. Click **Run Pipeline Probe** on the editor toolbar (or from the Pipeline Probe tool window via **Configure...**)
@@ -205,7 +205,7 @@ A toolbar appears at the top of YAML files with quick-access buttons:
 </details>
 
 <details open>
-<summary><h3>Results Visualization</h3></summary>
+<summary><b>Results Visualization</b></summary>
 
 Results display as a vertical flow diagram:
 
@@ -220,7 +220,7 @@ Results display as a vertical flow diagram:
 </details>
 
 <details open>
-<summary><h3>Nested Pipeline Support</h3></summary>
+<summary><b>Nested Pipeline Support</b></summary>
 
 For pipelines that wrap other datasets (e.g. `PatchedDataset` wrapping `LazyDataset`), the inner dataset is probed first, then the outer one. Inner results appear above, connected by a "Wrapped by ..." arrow.
 
@@ -228,7 +228,7 @@ For pipelines that wrap other datasets (e.g. `PatchedDataset` wrapping `LazyData
 </details>
 
 <details open>
-<summary><h3>Error Handling</h3></summary>
+<summary><b>Error Handling</b></summary>
 
 If a transform fails mid-pipeline, all successful steps are shown normally, followed by a red error block with the error message and a collapsible traceback. If an inner dataset in a nested pipeline fails, the outer dataset is skipped with a notice.
 
@@ -244,7 +244,7 @@ If a transform fails mid-pipeline, all successful steps are shown normally, foll
 <!-- > **Screenshot:** `tensor-visualizer.png` -->
 
 <details open>
-<summary><h3>Per-Dimension Role Assignment</h3></summary>
+<summary><b>Per-Dimension Role Assignment</b></summary>
 
 Each dimension of the tensor gets a role dropdown:
 
@@ -261,7 +261,7 @@ Roles are auto-assigned on open (last dim = W, second-to-last = H, third-to-last
 </details>
 
 <details open>
-<summary><h3>Display Modes and Colormaps</h3></summary>
+<summary><b>Display Modes and Colormaps</b></summary>
 
 | Mode | Description |
 |---|---|
@@ -275,7 +275,7 @@ Colormaps (**gray**, **viridis**, **jet**, **inferno**, **turbo**) are available
 </details>
 
 <details open>
-<summary><h3>Channel Modes</h3></summary>
+<summary><b>Channel Modes</b></summary>
 
 When a **C** dimension is assigned:
 
@@ -288,7 +288,7 @@ When a **C** dimension is assigned:
 </details>
 
 <details open>
-<summary><h3>Image Inspection</h3></summary>
+<summary><b>Image Inspection</b></summary>
 
 - **Zoom** &mdash; scroll wheel (zooms toward cursor)
 - **Pan** &mdash; click and drag
