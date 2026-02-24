@@ -5,7 +5,6 @@ import com.intellij.lang.documentation.DocumentationMarkup
 import com.intellij.openapi.util.text.StringUtil
 import com.jetbrains.python.psi.PyClass
 import com.jetbrains.python.psi.PyFunction
-import com.jetbrains.python.psi.types.TypeEvalContext
 
 /** HTML rendering utilities for documentation popups. */
 object DocHtmlRenderer {
@@ -34,7 +33,7 @@ object DocHtmlRenderer {
     fun buildClassHeader(cls: PyClass): String {
         val name = cls.name ?: "<class>"
         val bases: List<String> = try {
-            val ctx = TypeEvalContext.codeAnalysis(cls.project, cls.containingFile)
+            val ctx = TypeEvalContextCompat.codeAnalysis(cls.project, cls.containingFile)
             val supers = cls.getSuperClasses(ctx)
             if (!supers.isNullOrEmpty()) supers.mapNotNull { it.qualifiedName ?: it.name }
             else cls.superClassExpressions.map { it.text }

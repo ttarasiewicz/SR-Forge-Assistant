@@ -19,7 +19,7 @@ data class ForwardBag(
 
 /** Build propagated __init__ params grouped by class (own + forwarded parent params). */
 fun buildPropagatedParams(cls: PyClass): LinkedHashMap<PyClass, LinkedHashMap<String, ParamInfo>>? {
-    val ctx = TypeEvalContext.codeAnalysis(cls.project, cls.containingFile)
+    val ctx = TypeEvalContextCompat.codeAnalysis(cls.project, cls.containingFile)
     val ownInit = cls.findInitOrNew(false, ctx) ?: cls.findInitOrNew(true, ctx) ?: return null
 
     val sections = LinkedHashMap<PyClass, LinkedHashMap<String, ParamInfo>>()
