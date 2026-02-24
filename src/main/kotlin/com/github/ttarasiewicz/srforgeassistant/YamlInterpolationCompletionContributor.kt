@@ -746,7 +746,7 @@ class YamlInterpolationCompletionContributor : CompletionContributor() {
          * Subclass methods take precedence over inherited ones.
          */
         private fun collectCallableMethods(pyClass: PyClass): List<MethodInfo> {
-            val ctx = TypeEvalContext.codeAnalysis(pyClass.project, pyClass.containingFile)
+            val ctx = TypeEvalContextCompat.codeAnalysis(pyClass.project, pyClass.containingFile)
             val seen = HashSet<String>()
             val result = ArrayList<MethodInfo>()
 

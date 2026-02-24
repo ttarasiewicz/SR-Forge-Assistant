@@ -1,6 +1,7 @@
 package com.github.ttarasiewicz.srforgeassistant.probe
 
 import com.github.ttarasiewicz.srforgeassistant.TargetUtils
+import com.github.ttarasiewicz.srforgeassistant.TypeEvalContextCompat
 import com.intellij.openapi.project.Project
 import com.jetbrains.python.psi.PyClass
 import com.jetbrains.python.psi.types.TypeEvalContext
@@ -101,7 +102,7 @@ object YamlPipelineParser {
 
     private fun isDatasetSubclass(cls: PyClass): Boolean {
         val visited = mutableSetOf<String>()
-        val ctx = TypeEvalContext.codeAnalysis(cls.project, cls.containingFile)
+        val ctx = TypeEvalContextCompat.codeAnalysis(cls.project, cls.containingFile)
         return walkMro(cls, ctx, visited)
     }
 
