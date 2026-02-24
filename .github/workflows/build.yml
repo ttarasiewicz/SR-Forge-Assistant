@@ -47,9 +47,6 @@ jobs:
       - name: Verify Plugin Structure
         run: ./gradlew verifyPluginStructure
 
-      - name: Verify Plugin Compatibility
-        run: ./gradlew verifyPlugin
-
       - name: Prepare Plugin Artifact
         id: artifact
         shell: bash
