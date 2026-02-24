@@ -217,7 +217,8 @@ object ProbeExecutor {
             stdValue = fo.get("stdValue")?.takeIf { !it.isJsonNull }?.asString,
             preview = fo.get("preview")?.takeIf { !it.isJsonNull }?.asString,
             sizeBytes = fo.get("sizeBytes")?.takeIf { !it.isJsonNull }?.asLong,
-            children = children
+            children = children,
+            npyPath = fo.get("npyPath")?.takeIf { !it.isJsonNull }?.asString
         )
     }
 }

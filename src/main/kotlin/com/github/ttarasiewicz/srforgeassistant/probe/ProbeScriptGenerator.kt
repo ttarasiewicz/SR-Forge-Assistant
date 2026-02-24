@@ -20,6 +20,16 @@ object ProbeScriptGenerator {
     }
 
     /**
+     * Returns the visualization script content read from the bundled resource file.
+     */
+    fun loadVizScript(): String {
+        return ProbeScriptGenerator::class.java
+            .getResourceAsStream("/probe/viz_script.py")!!
+            .bufferedReader()
+            .use { it.readText() }
+    }
+
+    /**
      * Builds the JSON config string that the probe script reads from `sys.argv[1]`.
      */
     fun generateConfig(
@@ -27,14 +37,18 @@ object ProbeScriptGenerator {
         datasetPath: String,
         pipeline: DatasetNode,
         pathOverrides: Map<String, String>,
-        projectPaths: List<String>
+        projectPaths: List<String>,
+        tensorDir: String? = null
     ): String {
-        val config = mapOf(
+        val config = mutableMapOf<String, Any?>(
             "yamlPath" to yamlFilePath,
             "datasetPath" to datasetPath,
             "pathOverrides" to pathOverrides,
             "projectPaths" to projectPaths
         )
+        if (tensorDir != null) {
+            config["tensorDir"] = tensorDir
+        }
         return Gson().toJson(config)
     }
 }

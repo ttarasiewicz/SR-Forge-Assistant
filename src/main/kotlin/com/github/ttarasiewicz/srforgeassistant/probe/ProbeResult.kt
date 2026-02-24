@@ -14,7 +14,8 @@ data class FieldSnapshot(
     val stdValue: String?,
     val preview: String?,
     val sizeBytes: Long?,
-    val children: List<FieldSnapshot>? = null
+    val children: List<FieldSnapshot>? = null,
+    val npyPath: String? = null
 )
 
 /**

@@ -1,5 +1,6 @@
 package com.github.ttarasiewicz.srforgeassistant.probe
 
+import com.intellij.openapi.project.Project
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBLabel
 import com.intellij.util.ui.JBUI
@@ -18,7 +19,7 @@ private enum class DiffSide { AFTER, BEFORE }
  * Displays fields as individual expandable blocks with color-coded borders.
  * All blocks start collapsed; clicking the header expands.
  */
-class FieldDetailPanel(private val diffs: List<FieldDiff>) : JPanel() {
+class FieldDetailPanel(private val diffs: List<FieldDiff>, private val project: Project) : JPanel() {
 
     init {
         layout = BoxLayout(this, BoxLayout.Y_AXIS)
@@ -116,13 +117,37 @@ class FieldDetailPanel(private val diffs: List<FieldDiff>) : JPanel() {
 
         panel.add(leftPanel, BorderLayout.WEST)
 
+        val rightPanel = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(4), 0)).apply {
+            isOpaque = false
+        }
+
+        if (field.npyPath != null) {
+            val vizButton = JButton("Visualize").apply {
+                font = font.deriveFont(font.size - 2f)
+                isFocusPainted = false
+                putClientProperty("JButton.buttonType", "roundRect")
+                cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+                preferredSize = Dimension(JBUI.scale(76), JBUI.scale(20))
+                addActionListener {
+                    TensorVisualizerDialog(project, field).show()
+                }
+            }
+            vizButton.addMouseListener(object : MouseAdapter() {
+                override fun mouseClicked(e: MouseEvent) { e.consume() }
+                override fun mousePressed(e: MouseEvent) { e.consume() }
+            })
+            rightPanel.add(vizButton)
+        }
+
         if (field.sizeBytes != null) {
-            panel.add(JBLabel(formatBytes(field.sizeBytes)).apply {
+            rightPanel.add(JBLabel(formatBytes(field.sizeBytes)).apply {
                 foreground = UIUtil.getInactiveTextColor()
                 font = font.deriveFont(font.size - 1f)
                 border = JBUI.Borders.emptyRight(4)
-            }, BorderLayout.EAST)
+            })
         }
+
+        panel.add(rightPanel, BorderLayout.EAST)
 
         return panel
     }
@@ -167,7 +192,7 @@ class FieldDetailPanel(private val diffs: List<FieldDiff>) : JPanel() {
                 addSnapshotStats(panel, field, monoFont, UIUtil.getLabelForeground())
                 if (!diff.childDiffs.isNullOrEmpty()) {
                     panel.add(Box.createVerticalStrut(JBUI.scale(4)))
-                    val childPanel = FieldDetailPanel(diff.childDiffs)
+                    val childPanel = FieldDetailPanel(diff.childDiffs, project)
                     childPanel.alignmentX = Component.LEFT_ALIGNMENT
                     panel.add(childPanel)
                 }
@@ -338,13 +363,37 @@ class FieldDetailPanel(private val diffs: List<FieldDiff>) : JPanel() {
             })
             headerPanel.add(leftPanel, BorderLayout.WEST)
 
+            val rightPanel = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(4), 0)).apply {
+                isOpaque = false
+            }
+
+            if (snapshot.npyPath != null) {
+                val vizButton = JButton("Visualize").apply {
+                    font = font.deriveFont(font.size - 2f)
+                    isFocusPainted = false
+                    putClientProperty("JButton.buttonType", "roundRect")
+                    cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+                    preferredSize = Dimension(JBUI.scale(76), JBUI.scale(20))
+                    addActionListener {
+                        TensorVisualizerDialog(this@FieldDetailPanel.project, snapshot).show()
+                    }
+                }
+                vizButton.addMouseListener(object : MouseAdapter() {
+                    override fun mouseClicked(e: MouseEvent) { e.consume() }
+                    override fun mousePressed(e: MouseEvent) { e.consume() }
+                })
+                rightPanel.add(vizButton)
+            }
+
             if (snapshot.sizeBytes != null) {
-                headerPanel.add(JBLabel(formatBytes(snapshot.sizeBytes)).apply {
+                rightPanel.add(JBLabel(formatBytes(snapshot.sizeBytes)).apply {
                     foreground = UIUtil.getInactiveTextColor()
                     font = font.deriveFont(font.size - 1f)
                     border = JBUI.Borders.emptyRight(4)
-                }, BorderLayout.EAST)
+                })
             }
+
+            headerPanel.add(rightPanel, BorderLayout.EAST)
 
             // Body
             val bodyPanel = JPanel().apply {
