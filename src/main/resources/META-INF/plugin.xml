@@ -8,15 +8,19 @@
 
     <h3>Features</h3>
     <ul>
-        <li><b>_target_ completion</b> &mdash; auto-complete Python class FQNs in <code>_target_:</code> fields with dot-triggered popup</li>
-        <li><b>Go-to-definition</b> &mdash; Ctrl+Click on <code>_target_:</code> values to navigate to the Python class</li>
-        <li><b>Hover documentation</b> &mdash; quick docs for <code>_target_:</code> classes showing signature and docstring</li>
-        <li><b>Interpolation completion</b> &mdash; auto-complete <code>${path.to.key}</code> interpolation references</li>
-        <li><b>Interpolation folding</b> &mdash; fold interpolation expressions to their resolved values</li>
-        <li><b>Parameter stub generation</b> &mdash; generate constructor parameter stubs for <code>_target_:</code> classes</li>
-        <li><b>Parameter inspections</b> &mdash; warnings for missing required params and unknown param names</li>
-        <li><b>Scope highlighting</b> &mdash; highlight the current <code>_target_:</code> block and parent key</li>
-        <li><b>Pipeline Probe</b> &mdash; visualize dataset pipeline data flow and field snapshots</li>
+        <li><b>_target_ completion</b> &mdash; fuzzy-search Python class FQNs with dot-triggered popup</li>
+        <li><b>Parameter completion</b> &mdash; suggestions from the resolved class's <code>__init__</code> signature</li>
+        <li><b>Go-to-definition</b> &mdash; Ctrl+Click on <code>_target_:</code> values to jump to the Python source</li>
+        <li><b>Hover documentation</b> &mdash; docstrings, signatures, and parameter info on hover</li>
+        <li><b>Parameter stub generation</b> &mdash; one-click insertion of missing parameters via gutter icon or intention</li>
+        <li><b>Parameter inspections</b> &mdash; warnings for missing required params and unknown param names with quick-fixes</li>
+        <li><b>Interpolation completion</b> &mdash; segment-by-segment path completion inside <code>${...}</code> expressions</li>
+        <li><b>Interpolation folding</b> &mdash; fold expressions to their resolved values, auto-collapse on file open</li>
+        <li><b>Reference validation</b> &mdash; error annotations for unresolvable interpolation paths</li>
+        <li><b>Scope highlighting</b> &mdash; background shading and bold parent key for the active <code>_target_:</code> block</li>
+        <li><b>Pipeline Probe</b> &mdash; run a dataset pipeline on one sample and visualize Entry state at every transform step</li>
+        <li><b>Tensor Visualizer</b> &mdash; interactive visualization with per-dimension roles, colormaps, channel modes, and histogram</li>
+        <li><b>Debugger integration</b> &mdash; right-click a tensor variable to visualize it instantly</li>
     </ul>
     ]]></description>
 
