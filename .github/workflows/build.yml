@@ -90,10 +90,10 @@ jobs:
           name: tests-result
           path: ${{ github.workspace }}/build/reports/tests
 
-  # Create a draft release on push to main for manual review.
-  # Publishing the draft triggers the Release workflow.
-  releaseDraft:
-    name: Release Draft
+  # Publish a GitHub Release when build + test pass on main.
+  # This triggers the Release workflow which publishes to JetBrains Marketplace.
+  release:
+    name: Release
     if: github.event_name != 'pull_request'
     needs: [build, test]
     runs-on: ubuntu-latest
@@ -112,11 +112,23 @@ jobs:
             --jq '.[] | select(.draft == true) | .id' \
             | xargs -I '{}' gh api -X DELETE repos/{owner}/{repo}/releases/{}
 
-      - name: Create Release Draft
+      - name: Check if Release Exists
+        id: check
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v${{ needs.build.outputs.version }}"
+          if gh release view "$TAG" &>/dev/null; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create Release
+        if: steps.check.outputs.exists == 'false'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release create "v${{ needs.build.outputs.version }}" \
-            --draft \
             --title "v${{ needs.build.outputs.version }}" \
             --generate-notes
