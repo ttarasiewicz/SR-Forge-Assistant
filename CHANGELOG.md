@@ -7,6 +7,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com).
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-02-25
+### Fixed
+- Eliminated `TypeEvalContext.Companion` internal API warnings by compiling against 2025.3 stable SDK
+- Added Java shim (`TypeEvalContextCompat`) to avoid Kotlin Companion bytecode generation
+### Changed
+- Added screenshots and GIFs to README for all features
+
 ## [0.4.0] - 2026-02-24
 ### Added
 - Tensor Visualizer &mdash; interactive dialog with per-dimension role assignment (H, W, C, Index, Mean, Max, Min, Sum), display modes (Min-Max, Histogram Eq, CLAHE, Custom Range), colormaps, channel modes, histogram, zoom/pan, pixel inspection, and PNG export
