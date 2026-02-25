@@ -1,6 +1,6 @@
-# GitHub Actions Workflow for building and testing the plugin on pushes to main and pull requests.
-# On pushes to main, a draft GitHub Release is created for manual review.
-# Publishing the release triggers the Release workflow which publishes to JetBrains Marketplace.
+# GitHub Actions Workflow for building, testing, and releasing the plugin.
+# On pushes to main: build, test, create GitHub Release, sign, publish to JetBrains Marketplace.
+# On pull requests: build and test only.
 
 name: Build
 on:
@@ -90,8 +90,8 @@ jobs:
           name: tests-result
           path: ${{ github.workspace }}/build/reports/tests
 
-  # Publish a GitHub Release when build + test pass on main.
-  # This triggers the Release workflow which publishes to JetBrains Marketplace.
+  # Build, sign, publish to marketplace, and create GitHub Release — all in one job.
+  # Only runs on main (not PRs) and only when the version tag doesn't already exist.
   release:
     name: Release
     if: github.event_name != 'pull_request'
@@ -101,28 +101,50 @@ jobs:
       contents: write
     steps:
 
-      - name: Fetch Sources
-        uses: actions/checkout@v4
-
-      - name: Remove Old Release Drafts
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh api repos/{owner}/{repo}/releases \
-            --jq '.[] | select(.draft == true) | .id' \
-            | xargs -I '{}' gh api -X DELETE repos/{owner}/{repo}/releases/{}
-
       - name: Check if Release Exists
         id: check
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="v${{ needs.build.outputs.version }}"
-          if gh release view "$TAG" &>/dev/null; then
+          if gh release view "$TAG" --repo ${{ github.repository }} &>/dev/null; then
             echo "exists=true" >> $GITHUB_OUTPUT
           else
             echo "exists=false" >> $GITHUB_OUTPUT
           fi
+
+      - name: Fetch Sources
+        if: steps.check.outputs.exists == 'false'
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        if: steps.check.outputs.exists == 'false'
+        uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: 21
+
+      - name: Setup Gradle
+        if: steps.check.outputs.exists == 'false'
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Publish Plugin
+        if: steps.check.outputs.exists == 'false'
+        env:
+          PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
+          CERTIFICATE_CHAIN: ${{ secrets.CERTIFICATE_CHAIN }}
+          PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
+          PRIVATE_KEY_PASSWORD: ${{ secrets.PRIVATE_KEY_PASSWORD }}
+        run: ./gradlew publishPlugin
+
+      - name: Remove Old Release Drafts
+        if: steps.check.outputs.exists == 'false'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api repos/{owner}/{repo}/releases \
+            --jq '.[] | select(.draft == true) | .id' \
+            | xargs -I '{}' gh api -X DELETE repos/{owner}/{repo}/releases/{}
 
       - name: Create Release
         if: steps.check.outputs.exists == 'false'
@@ -131,4 +153,5 @@ jobs:
         run: |
           gh release create "v${{ needs.build.outputs.version }}" \
             --title "v${{ needs.build.outputs.version }}" \
-            --generate-notes
+            --generate-notes \
+            ./build/distributions/*

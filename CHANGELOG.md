@@ -7,6 +7,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com).
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-02-25
+### Changed
+- Automated release pipeline: build, test, sign, publish, and create GitHub Release in a single workflow
+- Marketplace "What's New" section now auto-populated from CHANGELOG.md
+
 ## [0.4.2] - 2026-02-25
 ### Added
 - JetBrains Marketplace description (`MARKETPLACE.md`) with full HTML and absolute image URLs
@@ -86,7 +91,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com).
 - Pipeline error handling with traceback display
 - Settings page with per-feature toggles, highlight colors, folding options, and probe timeout
 
-[Unreleased]: https://github.com/ttarasiewicz/SR-Forge-Assistant/compare/v0.4.2...HEAD
+[Unreleased]: https://github.com/ttarasiewicz/SR-Forge-Assistant/compare/v0.4.3...HEAD
+[0.4.3]: https://github.com/ttarasiewicz/SR-Forge-Assistant/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/ttarasiewicz/SR-Forge-Assistant/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/ttarasiewicz/SR-Forge-Assistant/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/ttarasiewicz/SR-Forge-Assistant/compare/v0.3.1...v0.4.0
