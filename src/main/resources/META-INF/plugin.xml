@@ -24,6 +24,8 @@
     </ul>
     ]]></description>
 
+    <!-- Shared platform functionality (required by all plugins) -->
+    <depends>com.intellij.modules.platform</depends>
     <!-- Restrict to IDEs with Python support (PyCharm, DataSpell, IDEA with Python plugin) -->
     <depends>com.intellij.modules.python</depends>
     <depends>PythonCore</depends>
