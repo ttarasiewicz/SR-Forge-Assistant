@@ -65,7 +65,12 @@
 
 Fuzzy-search Python classes and functions by fully qualified name. A dot (`.`) auto-triggers the popup for the next path segment &mdash; no need to press <kbd>Ctrl</kbd>+<kbd>Space</kbd> repeatedly.
 
-<!-- > **Screenshot:** `target-completion.gif` -->
+<div align="center">
+
+![Target completion](.github/readme/target-completion.gif)
+<br><em>Dot-triggered fuzzy search across Python packages</em>
+
+</div>
 </details>
 
 <details open>
@@ -73,7 +78,12 @@ Fuzzy-search Python classes and functions by fully qualified name. A dot (`.`) a
 
 Inside a `params:` block, get suggestions from the resolved class's `__init__` signature. Already-present parameters are automatically excluded.
 
-<!-- > **Screenshot:** `param-completion.gif` -->
+<div align="center">
+
+![Parameter completion](.github/readme/param-completion.gif)
+<br><em>Suggestions from the resolved class's __init__ signature</em>
+
+</div>
 </details>
 
 <details open>
@@ -81,7 +91,12 @@ Inside a `params:` block, get suggestions from the resolved class's `__init__` s
 
 <kbd>Ctrl</kbd>+<kbd>Click</kbd> (or <kbd>Ctrl</kbd>+<kbd>B</kbd>) on any `_target:` value to jump straight to the Python class or function definition.
 
-<!-- > **Screenshot:** `goto-definition.gif` -->
+<div align="center">
+
+![Go to definition](.github/readme/goto-definition.gif)
+<br><em>Jump straight to the Python source</em>
+
+</div>
 </details>
 
 <details open>
@@ -89,7 +104,12 @@ Inside a `params:` block, get suggestions from the resolved class's `__init__` s
 
 Hover over `_target:` values to see the class/function docstring and full signature. Hover over parameter keys inside `params:` to see their type, default value, and description.
 
-<!-- > **Screenshot:** `hover-docs.png` -->
+<div align="center">
+
+![Hover documentation](.github/readme/hover-docs.png)
+<br><em>Docstring, signature, and parameter info on hover</em>
+
+</div>
 </details>
 
 <details open>
@@ -101,7 +121,12 @@ One-click insertion of missing parameters. Available via:
 
 Default values are used where available, `null` otherwise.
 
-<!-- > **Screenshot:** `param-stubs.gif` -->
+<div align="center">
+
+![Parameter stubs](.github/readme/param-stubs.gif)
+<br><em>One-click insertion of all missing parameters</em>
+
+</div>
 </details>
 
 <details open>
@@ -109,7 +134,12 @@ Default values are used where available, `null` otherwise.
 
 Warning when required `__init__` parameters (those without defaults) are missing from `params:`. A quick-fix inserts them automatically.
 
-<!-- > **Screenshot:** `missing-params-inspection.png` -->
+<div align="center">
+
+![Missing params inspection](.github/readme/missing-params-inspection.gif)
+<br><em>Warning with quick-fix for missing required parameters</em>
+
+</div>
 </details>
 
 <details open>
@@ -117,7 +147,12 @@ Warning when required `__init__` parameters (those without defaults) are missing
 
 Catches typos in parameter keys. Flags unknown names and suggests the closest match by edit distance with a one-click rename quick-fix.
 
-<!-- > **Screenshot:** `unknown-param-inspection.png` -->
+<div align="center">
+
+![Unknown param inspection](.github/readme/unknown-param-inspection.png)
+<br><em>Typo detection with closest-match suggestion</em>
+
+</div>
 </details>
 
 ---
@@ -131,7 +166,12 @@ Catches typos in parameter keys. Flags unknown names and suggests the closest ma
 
 Segment-by-segment key path completion inside interpolation expressions. At each `.`, the popup shows direct children of the resolved node with value previews and type icons (mapping, sequence, scalar). Supports both dot notation (`list.0.key`) and bracket notation (`list[0].key`).
 
-<!-- > **Screenshot:** `interpolation-completion.gif` -->
+<div align="center">
+
+![Interpolation completion](.github/readme/interpolation-completion.gif)
+<br><em>Segment-by-segment path completion with value previews</em>
+
+</div>
 </details>
 
 <details open>
@@ -139,7 +179,12 @@ Segment-by-segment key path completion inside interpolation expressions. At each
 
 Interpolation expressions are resolved against the YAML document and displayed as fold placeholders. Folds collapse automatically on file open and can be toggled individually or all at once via the toolbar.
 
-<!-- > **Screenshot:** `interpolation-folding.gif` -->
+<div align="center">
+
+![Interpolation folding](.github/readme/interpolation-folding.gif)
+<br><em>Folds collapse to resolved values, toggle individually or all at once</em>
+
+</div>
 </details>
 
 <details open>
@@ -147,7 +192,12 @@ Interpolation expressions are resolved against the YAML document and displayed a
 
 Unresolvable interpolation paths are flagged with an error annotation. Unknown resolver prefixes are also detected.
 
-<!-- > **Screenshot:** `interpolation-validation.png` -->
+<div align="center">
+
+![Interpolation validation](.github/readme/interpolation-validation.png)
+<br><em>Unresolvable paths flagged with error annotations</em>
+
+</div>
 </details>
 
 <details open>
@@ -155,7 +205,12 @@ Unresolvable interpolation paths are flagged with an error annotation. Unknown r
 
 After an interpolation reference like `${ref:model}`, type `.` to get method and attribute completions from the resolved Python class.
 
-<!-- > **Screenshot:** `post-interpolation-methods.gif` -->
+<div align="center">
+
+![Post-interpolation methods](.github/readme/post-interpolation-methods.gif)
+<br><em>Method completions from the resolved Python class</em>
+
+</div>
 </details>
 
 ---
@@ -167,7 +222,12 @@ After an interpolation reference like `${ref:model}`, type `.` to get method and
 
 The current `_target:` block gets a subtle background shading, and the parent key is rendered in bold &mdash; making it easy to see which block you're editing in deeply nested configs. Colors adapt to light and dark themes.
 
-<!-- > **Screenshot:** `scope-highlighting.png` -->
+<div align="center">
+
+![Scope highlighting](.github/readme/scope-highlighting.png)
+<br><em>Background shading and bold parent key for the active block</em>
+
+</div>
 </details>
 
 <details open>
@@ -181,7 +241,12 @@ A toolbar appears at the top of YAML files with quick-access buttons:
 | **Run Pipeline Probe** | Launch the probe for the current file |
 | **SR-Forge Settings** | Open the settings panel |
 
-<!-- > **Screenshot:** `editor-toolbar.png` -->
+<div align="center">
+
+![Editor toolbar](.github/readme/editor-toolbar.png)
+<br><em>Quick-access toolbar for folds, probe, and settings</em>
+
+</div>
 </details>
 
 ---
@@ -190,7 +255,12 @@ A toolbar appears at the top of YAML files with quick-access buttons:
 
 > Run the actual dataset pipeline on a single sample and visualize the Entry state at every transform step &mdash; field names, shapes, dtypes, value ranges, and memory sizes &mdash; without leaving the editor.
 
-<!-- > **Screenshot:** `probe-overview.png` -->
+<div align="center">
+
+![Pipeline Probe overview](.github/readme/probe-overview.png)
+<br><em>Full pipeline flow with transform steps and field details</em>
+
+</div>
 
 <details open>
 <summary><b>Usage</b></summary>
@@ -201,7 +271,6 @@ A toolbar appears at the top of YAML files with quick-access buttons:
 4. Click **OK** &mdash; the probe runs in the background with a progress indicator
 5. Results appear in the **Pipeline Probe** tool window
 
-<!-- > **Screenshot:** `probe-dialog.png` -->
 </details>
 
 <details open>
@@ -216,7 +285,12 @@ Results display as a vertical flow diagram:
 - **Tensor visualization** &mdash; a **"Visualize"** button on tensor/ndarray fields opens the interactive [Tensor Visualizer](#bar_chart-tensor-visualizer)
 - **Container drill-down** &mdash; dict and list fields are expandable to inspect nested contents
 
-<!-- > **Screenshot:** `probe-results.gif` -->
+<div align="center">
+
+![Probe results](.github/readme/probe-results.gif)
+<br><em>Color-coded diffs and expandable field tables</em>
+
+</div>
 </details>
 
 <details open>
@@ -224,7 +298,12 @@ Results display as a vertical flow diagram:
 
 For pipelines that wrap other datasets (e.g. `PatchedDataset` wrapping `LazyDataset`), the inner dataset is probed first, then the outer one. Inner results appear above, connected by a "Wrapped by ..." arrow.
 
-<!-- > **Screenshot:** `probe-nested.png` -->
+<div align="center">
+
+![Nested pipeline](.github/readme/probe-nested.png)
+<br><em>Inner dataset probed first, connected by "Wrapped by..." arrow</em>
+
+</div>
 </details>
 
 <details open>
@@ -232,7 +311,12 @@ For pipelines that wrap other datasets (e.g. `PatchedDataset` wrapping `LazyData
 
 If a transform fails mid-pipeline, all successful steps are shown normally, followed by a red error block with the error message and a collapsible traceback. If an inner dataset in a nested pipeline fails, the outer dataset is skipped with a notice.
 
-<!-- > **Screenshot:** `probe-error.png` -->
+<div align="center">
+
+![Probe error](.github/readme/probe-error.png)
+<br><em>Failed transform with error message and collapsible traceback</em>
+
+</div>
 </details>
 
 ---
@@ -241,7 +325,12 @@ If a transform fails mid-pipeline, all successful steps are shown normally, foll
 
 > An interactive dialog for visualizing tensor and ndarray fields. Accessible from the **"Visualize"** button on any tensor field in Pipeline Probe results, or by right-clicking a tensor variable during debugging (see [Debugger Integration](#bug-debugger-integration)).
 
-<!-- > **Screenshot:** `tensor-visualizer.png` -->
+<div align="center">
+
+![Tensor Visualizer](.github/readme/tensor-visualizer.gif)
+<br><em>Dimension roles, colormaps, channel modes, and pixel inspection</em>
+
+</div>
 
 <details open>
 <summary><b>Per-Dimension Role Assignment</b></summary>
@@ -305,7 +394,12 @@ When a **C** dimension is assigned:
 
 > Right-click any **PyTorch Tensor** or **NumPy ndarray** variable in the debugger's **Threads & Variables** panel and select **"Visualize Tensor"** to open the same interactive tensor visualizer.
 
-<!-- > **Screenshot:** `debugger-visualize.png` -->
+<div align="center">
+
+![Debugger integration](.github/readme/debugger-visualize.gif)
+<br><em>Right-click a tensor variable to visualize it instantly</em>
+
+</div>
 
 Works with both the Variables list and Watches. The tensor is saved to a temporary `.npy` file, which is automatically cleaned up when the dialog closes.
 
