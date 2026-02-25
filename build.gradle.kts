@@ -39,6 +39,25 @@ intellijPlatform {
             // DO NOT call untilBuild.set(...)
         }
         name = providers.gradleProperty("pluginName").get()
+
+        changeNotes = provider {
+            val changelog = file("CHANGELOG.md").readText()
+            val version = project.version.toString()
+            // Extract the section for the current version
+            val pattern = Regex("""## \[$version].*?\n(.*?)(?=\n## \[|\n\[Unreleased])""", RegexOption.DOT_MATCHES_ALL)
+            val section = pattern.find(changelog)?.groupValues?.get(1)?.trim() ?: return@provider "See CHANGELOG.md"
+            // Convert markdown to simple HTML
+            section.lines()
+                .filter { it.isNotBlank() }
+                .joinToString("\n") { line ->
+                    when {
+                        line.startsWith("### ") -> "<b>${line.removePrefix("### ")}</b>"
+                        line.startsWith("- ") -> "<li>${line.removePrefix("- ")}</li>"
+                        else -> line
+                    }
+                }
+                .let { "<ul>\n$it\n</ul>" }
+        }
     }
     buildSearchableOptions = false
 
