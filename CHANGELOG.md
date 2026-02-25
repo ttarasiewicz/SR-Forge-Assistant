@@ -8,8 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com).
 ## [Unreleased]
 
 ## [0.4.4] - 2026-02-25
-### Fixed
-- Restricted IDE compatibility to PyCharm and DataSpell only (removed broad `com.intellij.modules.platform` dependency)
+### Changed
+- Restricted IDE compatibility to PyCharm and DataSpell via `com.intellij.modules.python` module dependency
+- Expanded Plugin Verifier to cover all PyCharm versions from 2024.2 to 2025.3
 
 ## [0.4.3] - 2026-02-25
 ### Changed
