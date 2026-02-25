@@ -7,6 +7,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com).
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-02-25
+### Fixed
+- Restricted IDE compatibility to PyCharm and DataSpell only (removed broad `com.intellij.modules.platform` dependency)
+
 ## [0.4.3] - 2026-02-25
 ### Changed
 - Automated release pipeline: build, test, sign, publish, and create GitHub Release in a single workflow
@@ -91,7 +95,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com).
 - Pipeline error handling with traceback display
 - Settings page with per-feature toggles, highlight colors, folding options, and probe timeout
 
-[Unreleased]: https://github.com/ttarasiewicz/SR-Forge-Assistant/compare/v0.4.3...HEAD
+[Unreleased]: https://github.com/ttarasiewicz/SR-Forge-Assistant/compare/v0.4.4...HEAD
+[0.4.4]: https://github.com/ttarasiewicz/SR-Forge-Assistant/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/ttarasiewicz/SR-Forge-Assistant/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/ttarasiewicz/SR-Forge-Assistant/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/ttarasiewicz/SR-Forge-Assistant/compare/v0.4.0...v0.4.1

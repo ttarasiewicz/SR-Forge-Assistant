@@ -24,9 +24,8 @@
     </ul>
     ]]></description>
 
-    <!-- Platform/module dependencies -->
-    <depends>com.intellij.modules.platform</depends>
-    <!-- Python Community plugin – works in PyCharm CE/Pro and IDEA with Python plugin -->
+    <!-- Restrict to IDEs with Python support (PyCharm, DataSpell, IDEA with Python plugin) -->
+    <depends>com.intellij.modules.python</depends>
     <depends>PythonCore</depends>
     <!-- YAML language plugin -->
     <depends>org.jetbrains.plugins.yaml</depends>
