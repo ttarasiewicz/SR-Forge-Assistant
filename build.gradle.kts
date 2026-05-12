@@ -21,8 +21,13 @@ kotlin {
 
 dependencies {
     intellijPlatform {
-        val ver = providers.gradleProperty("platformVersion").get()
-        pycharm(ver) { useInstaller = false }
+        val localPath = providers.gradleProperty("platformLocalPath").orNull
+        if (localPath != null) {
+            local(file(localPath))
+        } else {
+            val ver = providers.gradleProperty("platformVersion").get()
+            pycharm(ver) { useInstaller = false }
+        }
 
         bundledPlugin("org.jetbrains.plugins.yaml")
         bundledPlugin("PythonCore")

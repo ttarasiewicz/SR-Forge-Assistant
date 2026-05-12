@@ -1,8 +1,11 @@
 package com.github.ttarasiewicz.srforgeassistant
 
 import com.intellij.codeInspection.*
+import com.intellij.modcommand.ModPsiUpdater
+import com.intellij.modcommand.PsiUpdateModCommandQuickFix
 import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.Project
+import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiElementVisitor
 import org.jetbrains.yaml.psi.YAMLKeyValue
 import org.jetbrains.yaml.psi.YAMLMapping
@@ -57,13 +60,13 @@ class MissingRequiredParamsInspection : LocalInspectionTool() {
     /** Quick fix that inserts the missing required parameters into `params:`. */
     private class AddMissingParamsQuickFix(
         private val missingNames: List<String>
-    ) : LocalQuickFix {
+    ) : PsiUpdateModCommandQuickFix() {
 
         override fun getFamilyName(): String = "Add missing required parameters"
         override fun getName(): String = "Add missing required parameters: ${missingNames.joinToString(", ")}"
 
-        override fun applyFix(project: Project, descriptor: ProblemDescriptor) {
-            val targetKv = descriptor.psiElement as? YAMLKeyValue ?: return
+        override fun applyFix(project: Project, element: PsiElement, updater: ModPsiUpdater) {
+            val targetKv = element as? YAMLKeyValue ?: return
             val mapping = targetKv.parent as? YAMLMapping ?: return
             ParamUtils.generateMissingStubs(mapping)
         }

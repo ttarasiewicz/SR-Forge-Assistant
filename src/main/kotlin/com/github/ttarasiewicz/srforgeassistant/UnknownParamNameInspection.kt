@@ -1,8 +1,11 @@
 package com.github.ttarasiewicz.srforgeassistant
 
 import com.intellij.codeInspection.*
+import com.intellij.modcommand.ModPsiUpdater
+import com.intellij.modcommand.PsiUpdateModCommandQuickFix
 import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.Project
+import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiElementVisitor
 import org.jetbrains.yaml.psi.YAMLKeyValue
 import org.jetbrains.yaml.psi.YAMLMapping
@@ -91,13 +94,12 @@ class UnknownParamNameInspection : LocalInspectionTool() {
     }
 
     /** Quick fix that renames the param key to the suggested name. */
-    private class RenameParamQuickFix(private val suggestedName: String) : LocalQuickFix {
+    private class RenameParamQuickFix(private val suggestedName: String) : PsiUpdateModCommandQuickFix() {
 
         override fun getFamilyName(): String = "Rename parameter"
         override fun getName(): String = "Rename to '$suggestedName'"
 
-        override fun applyFix(project: Project, descriptor: ProblemDescriptor) {
-            val element = descriptor.psiElement
+        override fun applyFix(project: Project, element: PsiElement, updater: ModPsiUpdater) {
             val kv = element.parent as? YAMLKeyValue ?: (element as? YAMLKeyValue) ?: return
             val oldValue = kv.value?.text ?: ""
 

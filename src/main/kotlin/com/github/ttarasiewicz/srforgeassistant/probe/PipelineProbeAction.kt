@@ -2,6 +2,7 @@ package com.github.ttarasiewicz.srforgeassistant.probe
 
 import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
+import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.CommonDataKeys
@@ -103,6 +104,8 @@ class PipelineProbeAction : AnAction(
             }
         }
     }
+
+    override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT
 
     override fun update(e: AnActionEvent) {
         // When used from the SR-Forge toolbar (which is only shown for YAML files),

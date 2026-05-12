@@ -99,8 +99,6 @@
                     factoryClass="com.github.ttarasiewicz.srforgeassistant.probe.ProbeToolWindowFactory"
                     icon="/icons/probe.svg"/>
 
-        <applicationService
-                serviceImplementation="com.github.ttarasiewicz.srforgeassistant.SrForgeHighlightSettings"/>
         <applicationConfigurable
                 parentId="tools"
                 instance="com.github.ttarasiewicz.srforgeassistant.SrForgeSettingsConfigurable"

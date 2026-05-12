@@ -1,43 +1,42 @@
 package com.github.ttarasiewicz.srforgeassistant
 
-import com.intellij.codeInsight.intention.IntentionAction
-import com.intellij.openapi.editor.Editor
+import com.intellij.modcommand.ActionContext
+import com.intellij.modcommand.ModCommand
+import com.intellij.modcommand.ModCommandAction
+import com.intellij.modcommand.Presentation
 import com.intellij.openapi.project.DumbService
-import com.intellij.openapi.project.Project
 import com.intellij.psi.PsiElement
-import com.intellij.psi.PsiFile
 import org.jetbrains.yaml.psi.YAMLMapping
 
 /**
  * Alt+Enter intention that generates parameter stubs for the `_target:` class/function.
  * Works anywhere inside a YAML block that contains a `_target:` key.
  */
-class GenerateParamStubsIntention : IntentionAction {
+class GenerateParamStubsIntention : ModCommandAction {
 
-    override fun getFamilyName(): String = "SR-Forge Assistant"
-    override fun getText(): String = "Generate parameter stubs for _target"
-    override fun startInWriteAction(): Boolean = true
+    override fun getFamilyName(): String = "Generate parameter stubs for _target"
 
-    override fun isAvailable(project: Project, editor: Editor?, file: PsiFile?): Boolean {
-        if (!SrForgeHighlightSettings.getInstance().state.paramStubsEnabled) return false
-        if (file == null || editor == null) return false
-        if (DumbService.isDumb(project)) return false
+    override fun getPresentation(context: ActionContext): Presentation? {
+        if (!SrForgeHighlightSettings.getInstance().state.paramStubsEnabled) return null
+        if (DumbService.isDumb(context.project)) return null
         return try {
-            val element = file.findElementAt(editor.caretModel.offset) ?: return false
-            val context = findContext(element) ?: return false
-            val allParams = ParamUtils.resolveParamsFromTargetMapping(context.targetMapping) ?: return false
-            val existing = context.paramsMapping?.let { ParamUtils.existingParamNames(it) } ?: emptySet()
-            allParams.keys.any { it !in existing }
+            val leaf = context.findLeaf() ?: return null
+            val target = findContext(leaf) ?: return null
+            val allParams = ParamUtils.resolveParamsFromTargetMapping(target.targetMapping) ?: return null
+            val existing = target.paramsMapping?.let { ParamUtils.existingParamNames(it) } ?: emptySet()
+            if (allParams.keys.none { it !in existing }) return null
+            Presentation.of("Generate parameter stubs for _target")
         } catch (_: Throwable) {
-            false
+            null
         }
     }
 
-    override fun invoke(project: Project, editor: Editor?, file: PsiFile?) {
-        if (file == null || editor == null) return
-        val element = file.findElementAt(editor.caretModel.offset) ?: return
-        val context = findContext(element) ?: return
-        ParamUtils.generateMissingStubs(context.targetMapping)
+    override fun perform(context: ActionContext): ModCommand {
+        val leaf = context.findLeaf() ?: return ModCommand.nop()
+        val target = findContext(leaf) ?: return ModCommand.nop()
+        return ModCommand.psiUpdate(target.targetMapping) { writable ->
+            ParamUtils.generateMissingStubs(writable)
+        }
     }
 
     /** Context for the intention: the mapping containing _target and optionally existing params. */
