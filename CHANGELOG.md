@@ -16,6 +16,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com).
 - Removed redundant `<applicationService>` registration for `SrForgeHighlightSettings` (already declared via `@Service` annotation)
 ### Removed
 - Dropped support for PyCharm 2024.2 (raised `pluginSinceBuild` from 242 to 243). 2024.2 runs on JDK 17 and could not load the plugin's JDK 21 bytecode anyway
+### Fixed (internal cleanup)
+- Rewrote `ProbeToolWindowFactory` in Java to avoid Kotlin synthetic forwarder methods for `ToolWindowFactory`'s `@ApiStatus.Internal` defaults (eliminates 6 internal-API and 4 deprecated-API verifier warnings per IDE)
+- Replaced experimental `WriteIntentReadAction.run` with `WriteAction.runAndWait` in `ProbeToolWindowPanel` (-4 experimental-API warnings)
+- Cast `PyClass`/`PyNamedParameter` to `PsiNamedElement` for `.name` lookups so the bytecode references the stable interface instead of the experimental `PyAstClass`/`PyAstNamedParameter` methods
+- Replaced the deprecated 4-arg `TextFieldWithBrowseButton.addBrowseFolderListener` with the modern `withTitle`/`withDescription` builder + 2-arg overload (eliminates the last scheduled-for-removal API usage)
 
 ## [0.4.4] - 2026-02-25
 ### Changed

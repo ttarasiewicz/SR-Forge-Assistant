@@ -3,8 +3,7 @@ package com.github.ttarasiewicz.srforgeassistant.probe
 import com.intellij.icons.AllIcons
 import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
-import com.intellij.openapi.application.ApplicationManager
-import com.intellij.openapi.application.WriteIntentReadAction
+import com.intellij.openapi.application.WriteAction
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.progress.ProgressIndicator
@@ -208,8 +207,8 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
         val config = lastRunConfig ?: return
 
         // Save all documents so the Python probe reads the latest content from disk
-        ApplicationManager.getApplication().invokeAndWait {
-            WriteIntentReadAction.run { FileDocumentManager.getInstance().saveAllDocuments() }
+        WriteAction.runAndWait<Throwable> {
+            FileDocumentManager.getInstance().saveAllDocuments()
         }
 
         // Re-parse the YAML to pick up any edits since the last run
@@ -240,8 +239,8 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
 
     private fun configureAndRun() {
         // Save all documents so the Python probe reads the latest content from disk
-        ApplicationManager.getApplication().invokeAndWait {
-            WriteIntentReadAction.run { FileDocumentManager.getInstance().saveAllDocuments() }
+        WriteAction.runAndWait<Throwable> {
+            FileDocumentManager.getInstance().saveAllDocuments()
         }
 
         // PSI access requires a read action
