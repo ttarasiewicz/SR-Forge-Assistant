@@ -14,6 +14,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com).
 ### Fixed
 - `PipelineProbeAction` now declares `ActionUpdateThread.BGT` instead of falling back to the deprecated `OLD_EDT` default
 - Removed redundant `<applicationService>` registration for `SrForgeHighlightSettings` (already declared via `@Service` annotation)
+### Removed
+- Dropped support for PyCharm 2024.2 (raised `pluginSinceBuild` from 242 to 243). 2024.2 runs on JDK 17 and could not load the plugin's JDK 21 bytecode anyway
 
 ## [0.4.4] - 2026-02-25
 ### Changed
