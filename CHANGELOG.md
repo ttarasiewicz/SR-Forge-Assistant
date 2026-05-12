@@ -6,6 +6,14 @@ All notable changes to SR-Forge Assistant are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com).
 
 ## [Unreleased]
+### Changed
+- Alt+Enter quick-fixes and the parameter-stub intention now show an automatic preview of the resulting change (migrated to ModCommand APIs)
+- Bumped IntelliJ Platform compile target from 2025.3.3 to 2026.1
+- Migrated startup activities to the new `ProjectActivity` coroutine-based API
+- Build supports reusing a locally installed IDE for `runIde` via the `platformLocalPath` Gradle property (skips the ~1 GB platform download)
+### Fixed
+- `PipelineProbeAction` now declares `ActionUpdateThread.BGT` instead of falling back to the deprecated `OLD_EDT` default
+- Removed redundant `<applicationService>` registration for `SrForgeHighlightSettings` (already declared via `@Service` annotation)
 
 ## [0.4.4] - 2026-02-25
 ### Changed
