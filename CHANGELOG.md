@@ -7,6 +7,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com).
 
 ## [Unreleased]
 ### Changed
+- `_target:` FQN resolution now mirrors sr-forge's runtime `ConfigResolver` exactly. Replaces the previous heuristic re-export matching (which could find classes sr-forge couldn't actually load) with a filesystem walk + true `from .x import Y` re-export following. Restores hover, go-to-definition, parameter completion, and inspections for project-local classes in projects that aren't pip-installed but live on PyCharm's content/source roots. Project-level result cache, invalidated on any PSI change.
 - Alt+Enter quick-fixes and the parameter-stub intention now show an automatic preview of the resulting change (migrated to ModCommand APIs)
 - Bumped IntelliJ Platform compile target from 2025.3.3 to 2026.1
 - Migrated startup activities to the new `ProjectActivity` coroutine-based API
