@@ -13,7 +13,18 @@ data class TransformStep(
 )
 
 /**
- * A dataset node in the pipeline. May contain a wrapped inner dataset.
+ * A dataset node in the pipeline.
+ *
+ * Wrapping semantics:
+ *  - `wrappedDataset` — a single-child wrapper (e.g. `PatchedDataset` whose
+ *    `params.dataset` is the inner dataset). Always traversed during probing.
+ *  - `branches` — a multi-child composite (e.g. `ConcatDataset` whose
+ *    `params.datasets` is a list of inner datasets). At runtime only one
+ *    branch produces a given sample, so the probe walks exactly one — the
+ *    user picks which index in the selector dialog.
+ *
+ * Both can coexist on the same node in principle. In practice a node has
+ * either a single wrap or a branch list, never both.
  */
 data class DatasetNode(
     val path: String,
@@ -22,6 +33,8 @@ data class DatasetNode(
     val params: Map<String, String>,
     val transforms: List<TransformStep>,
     val wrappedDataset: DatasetNode?,
+    val branches: List<DatasetNode> = emptyList(),
+    val branchesParamKey: String? = null,
     val dataRoot: String?,
     val cacheDir: String? = null,
     val yamlOffset: Int

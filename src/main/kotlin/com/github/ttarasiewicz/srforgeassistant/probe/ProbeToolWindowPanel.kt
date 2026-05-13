@@ -3,13 +3,21 @@ package com.github.ttarasiewicz.srforgeassistant.probe
 import com.intellij.icons.AllIcons
 import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
+import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.application.WriteAction
+import com.intellij.openapi.editor.Editor
+import com.intellij.openapi.editor.ScrollType
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileEditor.FileEditorManager
+import com.intellij.openapi.fileEditor.TextEditor
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.Task
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.ui.ComboBox
+import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.psi.PsiManager
+import com.intellij.psi.util.PsiTreeUtil
+import org.jetbrains.yaml.psi.YAMLMapping
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
@@ -29,7 +37,13 @@ data class ProbeRunConfig(
     val datasetPath: String,
     val pipeline: DatasetNode,
     val pathOverrides: Map<String, String>,
-    val projectPaths: List<String>
+    val projectPaths: List<String>,
+    /**
+     * For each composite dataset path (e.g. `dataset.training.params.datasets`),
+     * the user-picked branch index. Defaulted to 0 inside the probe script for
+     * any composite not listed here.
+     */
+    val branchChoices: Map<String, Int> = emptyMap()
 )
 
 /**
@@ -56,15 +70,46 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
         addActionListener { rerunProbe() }
     }
 
+    private val stopButton = JButton().apply {
+        icon = AllIcons.Actions.Suspend
+        text = "Stop"
+        toolTipText = "Cancel any running probe and clear all results " +
+            "(frees memory used by snapshots and tensor files)"
+        isEnabled = false
+        addActionListener { stopAndClear() }
+    }
+
     private val configureButton = JButton("Configure...").apply {
         icon = ProbeIcons.Probe
         toolTipText = "Select dataset and configure paths"
         addActionListener { configureAndRun() }
     }
 
+    /** Progress indicator of the currently-running probe, if any. */
+    private var activeProbeIndicator: ProgressIndicator? = null
+
+    /** Whether the panel has any results / overlay / tensor data to clear. */
+    private val hasState: Boolean
+        get() = lastRunConfig != null
+            || pathOverlay != null
+            || tensorTempDir != null
+            || contentPanel.componentCount > 0
+
     /** Stored config from the last successful run. */
     var lastRunConfig: ProbeRunConfig? = null
         private set
+
+    /** Active path overlay drawn on top of the YAML editor. */
+    private var pathOverlay: YamlPathOverlay? = null
+    private var overlayEditor: Editor? = null
+
+    /**
+     * Deepest dataset reachable in the most-recently-completed probe, with
+     * the current branch choices applied. After a successful run, the path
+     * overlay always shows root → this leaf; hovering a dropdown item
+     * temporarily replaces it with a preview.
+     */
+    private var actualPathLeaf: DatasetNode? = null
 
 
     init {
@@ -75,6 +120,7 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
 
         val buttonBar = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(4), 0)).apply {
             isOpaque = false
+            add(stopButton)
             add(rerunButton)
             add(configureButton)
         }
@@ -92,6 +138,7 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
      */
     fun executeProbe(script: String, configJson: String, config: ProbeRunConfig) {
         cleanupTensorDir()
+        clearPathOverlay()
         val tDir = createTensorDir()
 
         // Inject tensorDir into the config JSON
@@ -102,6 +149,7 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
 
         lastRunConfig = config
         rerunButton.isEnabled = false
+        stopButton.isEnabled = true
         headerLabel.text = "Running probe..."
         headerLabel.icon = null
         contentPanel.removeAll()
@@ -111,6 +159,13 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
         // Build path→DatasetNode map for cache dir lookup on dataset_end
         val nodeMap = buildNodeMap(config.pipeline)
 
+        // The deepest leaf is deterministic given the config + branch choices —
+        // start the YAML path trace immediately so it animates in parallel with
+        // the probe rather than waiting for the run to finish.
+        val deepestLeaf = walkDeepestLeaf(config.pipeline, config.branchChoices)
+        actualPathLeaf = deepestLeaf
+        showPathForNode(deepestLeaf)
+
         // Streaming state — mutated on EDT by the onEvent callback
         var lastSnapshot: EntrySnapshot? = null
         var hasErrors = false
@@ -118,7 +173,8 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
         val onEvent: (ProbeEvent) -> Unit = { event ->
             when (event) {
                 is ProbeEvent.DatasetStart -> {
-                    addDatasetBlock(event.datasetName, event.datasetTarget)
+                    val node = nodeMap[event.datasetPath]
+                    addDatasetBlock(event.datasetName, event.datasetTarget, node)
                 }
                 is ProbeEvent.Snapshot -> {
                     val snapshot = event.snapshot
@@ -177,6 +233,11 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
                         headerLabel.icon = ProbeIcons.Probe
                     }
                     rerunButton.isEnabled = lastRunConfig != null
+                    stopButton.isEnabled = hasState
+                    activeProbeIndicator = null
+                    // The path overlay was already started at executeProbe();
+                    // nothing to do here — it stays put through completion
+                    // and the pulse continues on the leaf.
                 }
                 is ProbeEvent.Error -> {
                     hasErrors = true
@@ -196,7 +257,12 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
 
         object : Task.Backgroundable(project, "Running Pipeline Probe...", true) {
             override fun run(indicator: ProgressIndicator) {
-                ProbeExecutor.executeStreaming(project, script, enrichedConfigJson, indicator, onEvent)
+                activeProbeIndicator = indicator
+                try {
+                    ProbeExecutor.executeStreaming(project, script, enrichedConfigJson, indicator, onEvent)
+                } finally {
+                    activeProbeIndicator = null
+                }
             }
         }.queue()
     }
@@ -229,7 +295,8 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
             datasetPath = freshConfig.datasetPath,
             pipeline = freshConfig.pipeline,
             pathOverrides = freshConfig.pathOverrides,
-            projectPaths = freshConfig.projectPaths
+            projectPaths = freshConfig.projectPaths,
+            branchChoices = freshConfig.branchChoices
         )
 
         executeProbe(script, configJson, freshConfig)
@@ -293,7 +360,8 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
             datasetPath = config.datasetPath,
             pipeline = config.pipeline,
             pathOverrides = config.pathOverrides,
-            projectPaths = config.projectPaths
+            projectPaths = config.projectPaths,
+            branchChoices = config.branchChoices
         )
 
         executeProbe(script, configJson, config)
@@ -327,7 +395,7 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
 
     // ── Block rendering ────────────────────────────────────────────────
 
-    private fun addDatasetBlock(name: String, target: String) {
+    private fun addDatasetBlock(name: String, target: String, node: DatasetNode? = null) {
         val block = object : JPanel(BorderLayout()) {
             override fun paintComponent(g: Graphics) {
                 val g2 = g as Graphics2D
@@ -351,11 +419,39 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
         }
         block.add(nameLabel, BorderLayout.WEST)
 
-        val targetLabel = JBLabel(target).apply {
-            foreground = JBColor(Color(0xBBDEFB), Color(0x90CAF9))
-            font = font.deriveFont(font.size - 1f)
+        // Composite datasets (e.g. ConcatDataset) get an inline branch picker
+        // in place of the target FQN label. Changing the selection re-runs the
+        // probe with the new branch choice so the upstream pipeline rendered
+        // above this block updates accordingly.
+        if (node != null && node.branches.isNotEmpty()) {
+            val compositeKey = "${node.path}.params.${node.branchesParamKey ?: "datasets"}"
+            val currentIdx = (lastRunConfig?.branchChoices?.get(compositeKey) ?: 0)
+                .coerceIn(0, node.branches.size - 1)
+            val branchNames = node.branches.mapIndexed { i, b -> "[$i] ${b.displayName}" }
+            val combo = ComboBox(branchNames.toTypedArray()).apply {
+                selectedIndex = currentIdx
+                toolTipText = target
+            }
+            combo.addActionListener {
+                if (!rerunButton.isEnabled) return@addActionListener  // probe running
+                val newIdx = combo.selectedIndex
+                if (newIdx < 0) return@addActionListener
+                val cfg = lastRunConfig ?: return@addActionListener
+                if ((cfg.branchChoices[compositeKey] ?: 0) == newIdx) return@addActionListener
+                val newChoices = cfg.branchChoices.toMutableMap()
+                newChoices[compositeKey] = newIdx
+                lastRunConfig = cfg.copy(branchChoices = newChoices)
+                rerunProbe()
+            }
+            attachBranchPreviewOnHover(combo, node)
+            block.add(combo, BorderLayout.EAST)
+        } else {
+            val targetLabel = JBLabel(target).apply {
+                foreground = JBColor(Color(0xBBDEFB), Color(0x90CAF9))
+                font = font.deriveFont(font.size - 1f)
+            }
+            block.add(targetLabel, BorderLayout.EAST)
         }
-        block.add(targetLabel, BorderLayout.EAST)
 
         contentPanel.add(block)
     }
@@ -766,6 +862,188 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
         tensorTempDir = null
     }
 
+    // ── YAML path overlay ─────────────────────────────────────────────────
+
+    /**
+     * Animate a traced path overlay in the source editor connecting every
+     * ancestor key of [node] down to the leaf, then settle into a continuous
+     * pulse at the leaf. Replaces any active path overlay. Scrolls the leaf
+     * into view if it's currently off-screen.
+     *
+     * No-op if the YAML editor isn't open or the offset has gone stale.
+     */
+    private fun showPathForNode(node: DatasetNode) {
+        val cfg = lastRunConfig ?: return
+        val vf = LocalFileSystem.getInstance().findFileByPath(cfg.yamlFilePath) ?: return
+        val editor = FileEditorManager.getInstance(project).getEditors(vf)
+            .filterIsInstance<TextEditor>()
+            .firstOrNull()
+            ?.editor
+            ?: return
+
+        val offsets = ReadAction.compute<List<Int>, Throwable> {
+            val psiFile = PsiManager.getInstance(project).findFile(vf) as? YAMLFile
+                ?: return@compute emptyList()
+            collectPathOffsets(psiFile, node.yamlOffset)
+        }
+        if (offsets.isEmpty()) return
+
+        // If the editor we're decorating changed (different file/editor),
+        // discard the old overlay before constructing a new one.
+        if (overlayEditor !== editor) {
+            clearPathOverlay()
+        } else {
+            pathOverlay?.clear()
+        }
+        val overlay = pathOverlay ?: YamlPathOverlay(editor).also {
+            pathOverlay = it
+            overlayEditor = editor
+        }
+        overlay.show(offsets)
+
+        editor.scrollingModel.scrollTo(
+            editor.offsetToLogicalPosition(offsets.last()),
+            ScrollType.MAKE_VISIBLE,
+        )
+    }
+
+    private fun clearPathOverlay() {
+        pathOverlay?.clear()
+        pathOverlay = null
+        overlayEditor = null
+    }
+
+    /**
+     * Cancel any running probe and tear down everything the panel is holding
+     * onto: visualization blocks, path overlay, tensor temp files, and the
+     * stored run config. Used by the Stop button — the user invokes it to
+     * free memory before launching training (large .npy snapshots and Swing
+     * UI for a deep pipeline can add up).
+     */
+    private fun stopAndClear() {
+        // Cancelling the indicator causes ProbeExecutor to destroyProcess()
+        // on its next poll cycle (within ~100 ms).
+        activeProbeIndicator?.cancel()
+        activeProbeIndicator = null
+
+        clearPathOverlay()
+        actualPathLeaf = null
+
+        contentPanel.removeAll()
+        contentPanel.revalidate()
+        contentPanel.repaint()
+
+        cleanupTensorDir()
+
+        lastRunConfig = null
+        rerunButton.isEnabled = false
+        stopButton.isEnabled = false
+        headerLabel.text = "No probe results yet."
+        headerLabel.icon = null
+    }
+
+    /**
+     * Walk the dataset tree following single-child wrappers and the active
+     * (or default 0) branch of any composite, returning the deepest reachable
+     * leaf. This is what gets visualized in the probe panel for a given run.
+     */
+    private fun walkDeepestLeaf(node: DatasetNode, choices: Map<String, Int>): DatasetNode {
+        val wrapped = node.wrappedDataset
+        if (wrapped != null) return walkDeepestLeaf(wrapped, choices)
+        if (node.branches.isNotEmpty()) {
+            val key = "${node.path}.params.${node.branchesParamKey ?: "datasets"}"
+            val idx = (choices[key] ?: 0).coerceIn(0, node.branches.size - 1)
+            return walkDeepestLeaf(node.branches[idx], choices)
+        }
+        return node
+    }
+
+    /**
+     * Attach hover-preview behavior to a branch-picker combo: opening the
+     * popup hooks a MouseMotionListener onto its JList; hovering an item
+     * temporarily previews the path that *would* be drawn if that branch
+     * were chosen. Closing the popup restores the actual path (or lets a
+     * pending re-probe take over).
+     */
+    private fun attachBranchPreviewOnHover(combo: ComboBox<String>, composite: DatasetNode) {
+        var motion: java.awt.event.MouseMotionListener? = null
+        var hookedList: javax.swing.JList<*>? = null
+
+        combo.addPopupMenuListener(object : javax.swing.event.PopupMenuListener {
+            override fun popupMenuWillBecomeVisible(e: javax.swing.event.PopupMenuEvent) {
+                val list = comboPopupList(combo) ?: return
+                hookedList = list
+                val ml = object : java.awt.event.MouseMotionAdapter() {
+                    override fun mouseMoved(e: java.awt.event.MouseEvent) {
+                        val idx = list.locationToIndex(e.point)
+                        if (idx < 0 || idx >= composite.branches.size) return
+                        val cfg = lastRunConfig ?: return
+                        val previewLeaf = walkDeepestLeaf(composite.branches[idx], cfg.branchChoices)
+                        showPathForNode(previewLeaf)
+                    }
+                }
+                list.addMouseMotionListener(ml)
+                motion = ml
+            }
+
+            override fun popupMenuWillBecomeInvisible(e: javax.swing.event.PopupMenuEvent) {
+                motion?.let { hookedList?.removeMouseMotionListener(it) }
+                motion = null
+                hookedList = null
+                // Restore the actual path. If the user picked a different
+                // branch, the combo's ActionListener will fire next and
+                // trigger a re-probe (which clears the overlay and then
+                // sets a new one when the run completes).
+                actualPathLeaf?.let { showPathForNode(it) }
+            }
+
+            override fun popupMenuCanceled(e: javax.swing.event.PopupMenuEvent) {
+                popupMenuWillBecomeInvisible(e)
+            }
+        })
+    }
+
+    /**
+     * Access the JList that the combo's popup is built around. Used to
+     * attach mouse-hover listeners for branch path preview.
+     */
+    private fun comboPopupList(combo: ComboBox<*>): javax.swing.JList<*>? {
+        val popup = combo.ui.getAccessibleChild(combo, 0)
+            as? javax.swing.plaf.basic.BasicComboPopup
+        return popup?.list
+    }
+
+    /**
+     * Walk up from the target mapping at [yamlOffset], collecting the offset
+     * of each ancestor key (or the dash of each ancestor sequence-item). Returns
+     * the offsets root-first, with the leaf — the target mapping's containing
+     * key or sequence-item — last.
+     */
+    private fun collectPathOffsets(psiFile: YAMLFile, yamlOffset: Int): List<Int> {
+        val element = psiFile.findElementAt(yamlOffset)
+            ?: psiFile.findElementAt(yamlOffset + 1)
+            ?: return emptyList()
+        val targetMapping = PsiTreeUtil.getParentOfType(element, YAMLMapping::class.java)
+            ?: return emptyList()
+
+        val out = mutableListOf<Int>()
+        var current: com.intellij.psi.PsiElement? = targetMapping
+        while (current != null) {
+            when (current) {
+                is org.jetbrains.yaml.psi.YAMLKeyValue -> {
+                    val keyOffset = current.key?.textOffset ?: current.textOffset
+                    out.add(keyOffset)
+                }
+                is org.jetbrains.yaml.psi.YAMLSequenceItem -> {
+                    out.add(current.textOffset)
+                }
+            }
+            current = current.parent
+        }
+        // Walked leaf -> root; flip so root is first, leaf is last.
+        return out.asReversed()
+    }
+
     companion object {
         // Elevated surface for step blocks — white in light theme, slightly lighter in dark
         private val STEP_BLOCK_BG = JBColor(Color.WHITE, Color(0x3C3F41))
@@ -839,6 +1117,9 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
             val map = mutableMapOf(node.path to node)
             if (node.wrappedDataset != null) {
                 map.putAll(buildNodeMap(node.wrappedDataset))
+            }
+            for (branch in node.branches) {
+                map.putAll(buildNodeMap(branch))
             }
             return map
         }

@@ -142,7 +142,11 @@ class DatasetSelectorDialog(
     }
 
     /**
-     * Collect all data root paths from a dataset node and its wrapped datasets.
+     * Collect all data root paths from a dataset node, walking every wrapped
+     * dataset AND every branch of every composite. Since the in-visualization
+     * branch picker (added to dataset blocks at probe time) lets the user
+     * switch branches after the fact, we surface paths from every potentially
+     * reachable dataset up front so each can be overridden.
      */
     private fun collectDataRoots(node: DatasetNode): List<Pair<String, String?>> {
         val roots = mutableListOf<Pair<String, String?>>()
@@ -154,8 +158,9 @@ class DatasetSelectorDialog(
         if (node.dataRoot != null) {
             roots.add(node.displayName to node.dataRoot)
         }
-        if (node.wrappedDataset != null) {
-            collectDataRootsRecursive(node.wrappedDataset, roots)
+        node.wrappedDataset?.let { collectDataRootsRecursive(it, roots) }
+        for (branch in node.branches) {
+            collectDataRootsRecursive(branch, roots)
         }
     }
 

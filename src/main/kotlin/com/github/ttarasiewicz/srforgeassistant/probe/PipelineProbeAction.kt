@@ -89,7 +89,8 @@ class PipelineProbeAction : AnAction(
             datasetPath = config.datasetPath,
             pipeline = config.pipeline,
             pathOverrides = config.pathOverrides,
-            projectPaths = config.projectPaths
+            projectPaths = config.projectPaths,
+            branchChoices = config.branchChoices
         )
 
         // Activate tool window and delegate execution to the panel

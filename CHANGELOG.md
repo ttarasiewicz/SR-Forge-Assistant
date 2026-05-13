@@ -6,8 +6,14 @@ All notable changes to SR-Forge Assistant are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com).
 
 ## [Unreleased]
+### Added
+- Pipeline Probe now supports **composite datasets** like `ConcatDataset`. The parser detects YAML lists of dataset-typed `_target:` entries (e.g. `params.datasets:`) and the Python probe runs exactly one branch per composite at a time, matching what `ConcatDataset.__getitem__` actually does at training time.
+- Each composite dataset in the probe visualization now carries an **inline branch picker** — a small combo box embedded in the dataset's blue block listing every branch (`[0] PatchedDataset`, `[1] LazyDataset`, …). Switching it re-runs the probe with the new branch. Hovering items in the open popup live-previews each branch's path without selecting.
+- **Animated path overlay** drawn on top of the YAML editor: orange Bezier spine grows from the user-selected dataset root down to the deepest leaf actually probed, diamond markers pop in at each ancestor key with an ease-out-back overshoot, and the leaf gets a continuous pulsing halo. Implemented as a `CustomHighlighterRenderer`. The overlay starts animating the moment the probe begins (the leaf is computable from the config), not on completion. Hovering branch options in a composite's dropdown temporarily redraws the trace through that hypothetical branch.
+- **Stop / Clear button** in the probe tool window header. While a probe is running it cancels the Python process within ~100 ms (`ProbeExecutor` now polls the cancellation indicator instead of blocking on `waitFor(TIMEOUT)`). When idle it tears down all panel state — overlay, rendered blocks, `.npy` temp files, and the stored run config — to free memory before launching training.
 ### Changed
 - `_target:` FQN resolution now mirrors sr-forge's runtime `ConfigResolver` exactly. Replaces the previous heuristic re-export matching (which could find classes sr-forge couldn't actually load) with a filesystem walk + true `from .x import Y` re-export following. Restores hover, go-to-definition, parameter completion, and inspections for project-local classes in projects that aren't pip-installed but live on PyCharm's content/source roots. Project-level result cache, invalidated on any PSI change.
+- The probe script now receives a Kotlin-resolved whitelist of dataset paths so a YAML list-of-`_target:` entries is only treated as composite branches when those entries are actually Dataset subclasses; transforms (`transforms: [...]`) no longer get mistaken for branches.
 - Alt+Enter quick-fixes and the parameter-stub intention now show an automatic preview of the resulting change (migrated to ModCommand APIs)
 - Bumped IntelliJ Platform compile target from 2025.3.3 to 2026.1
 - Migrated startup activities to the new `ProjectActivity` coroutine-based API
