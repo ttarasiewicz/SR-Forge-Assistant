@@ -10,7 +10,6 @@ import java.awt.Font
 import javax.swing.JCheckBox
 import javax.swing.JComboBox
 import javax.swing.JComponent
-import javax.swing.JList
 import javax.swing.JPanel
 import javax.swing.JSpinner
 import javax.swing.SpinnerNumberModel
@@ -44,7 +43,13 @@ class SrForgeSettingsConfigurable : Configurable {
     // Pipeline Probe
     private lateinit var probeTimeoutSpinner: JSpinner
     private lateinit var pathTraceDurationSpinner: JSpinner
-    private lateinit var pipelineDisplayModeCombo: JComboBox<PipelineDisplayMode>
+    // NOTE: the polished/timeline pipeline display mode is a work-in-progress
+    // and its UI control is intentionally not built here. The setting value
+    // stays in [SrForgeHighlightSettings.SettingsState] and the chrome
+    // strategy code in [ProbeChrome] is fully preserved so the feature can
+    // be re-enabled by re-adding a combo box and restoring the original
+    // `when` in [ProbeChrome.forCurrentMode]. Until then, every probe runs
+    // through [LegacyProbeChrome].
 
     override fun getDisplayName(): String = "SR-Forge Assistant"
 
@@ -78,26 +83,6 @@ class SrForgeSettingsConfigurable : Configurable {
         // Pipeline Probe
         probeTimeoutSpinner = JSpinner(SpinnerNumberModel(s.probeTimeoutSeconds, 10, 600, 10))
         pathTraceDurationSpinner = JSpinner(SpinnerNumberModel(s.pathTraceDurationMs, 100, 2000, 50))
-        pipelineDisplayModeCombo = JComboBox(PipelineDisplayMode.values()).apply {
-            selectedItem = s.pipelineDisplayMode
-            renderer = object : javax.swing.DefaultListCellRenderer() {
-                override fun getListCellRendererComponent(
-                    list: JList<*>?,
-                    value: Any?,
-                    index: Int,
-                    isSelected: Boolean,
-                    cellHasFocus: Boolean,
-                ): java.awt.Component {
-                    val label = super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus)
-                    text = when (value as? PipelineDisplayMode) {
-                        PipelineDisplayMode.LEGACY -> "Legacy (faster, no animations)"
-                        PipelineDisplayMode.POLISHED -> "Polished (animated, drop shadows)"
-                        null -> value?.toString().orEmpty()
-                    }
-                    return label
-                }
-            }
-        }
 
         // Wire up dependent component toggling
         val disabledTip = "Enable the parent feature to configure this setting"
@@ -133,7 +118,6 @@ class SrForgeSettingsConfigurable : Configurable {
             .addComponent(TitledSeparator("Pipeline Probe"))
             .addLabeledComponent("Probe timeout (seconds):", probeTimeoutSpinner)
             .addLabeledComponent("YAML path trace duration (ms):", pathTraceDurationSpinner)
-            .addLabeledComponent("Pipeline visualization style:", pipelineDisplayModeCombo)
             .addComponentFillVertically(JPanel(), 0)
             .panel
 
@@ -160,7 +144,6 @@ class SrForgeSettingsConfigurable : Configurable {
             || (foldMaxLengthSpinner.value as Int) != s.foldPlaceholderMaxLength
             || (probeTimeoutSpinner.value as Int) != s.probeTimeoutSeconds
             || (pathTraceDurationSpinner.value as Int) != s.pathTraceDurationMs
-            || (pipelineDisplayModeCombo.selectedItem as PipelineDisplayMode) != s.pipelineDisplayMode
     }
 
     override fun apply() {
@@ -184,7 +167,6 @@ class SrForgeSettingsConfigurable : Configurable {
         s.foldPlaceholderMaxLength = foldMaxLengthSpinner.value as Int
         s.probeTimeoutSeconds = probeTimeoutSpinner.value as Int
         s.pathTraceDurationMs = pathTraceDurationSpinner.value as Int
-        s.pipelineDisplayMode = pipelineDisplayModeCombo.selectedItem as PipelineDisplayMode
 
         ApplicationManager.getApplication().messageBus
             .syncPublisher(SrForgeHighlightSettings.TOPIC)
@@ -211,7 +193,6 @@ class SrForgeSettingsConfigurable : Configurable {
         foldMaxLengthSpinner.value = s.foldPlaceholderMaxLength
         probeTimeoutSpinner.value = s.probeTimeoutSeconds
         pathTraceDurationSpinner.value = s.pathTraceDurationMs
-        pipelineDisplayModeCombo.selectedItem = s.pipelineDisplayMode
     }
 
     override fun disposeUIResources() {

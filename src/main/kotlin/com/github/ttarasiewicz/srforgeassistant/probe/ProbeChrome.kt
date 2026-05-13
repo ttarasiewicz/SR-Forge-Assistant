@@ -8,6 +8,7 @@ import com.intellij.ui.components.JBLabel
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import java.awt.BasicStroke
+import java.awt.BorderLayout
 import java.awt.Color
 import java.awt.Component
 import java.awt.Cursor
@@ -25,6 +26,7 @@ import javax.swing.JButton
 import javax.swing.JComponent
 import javax.swing.JPanel
 import javax.swing.JProgressBar
+import javax.swing.Timer
 import javax.swing.border.Border
 
 /**
@@ -49,12 +51,48 @@ import javax.swing.border.Border
  * uninstalls the old chrome from every live component, swaps the [current]
  * reference, then installs the new chrome.
  */
+/** Placement options for the dataset block's branch-picker combo. */
+enum class BranchPickerPlacement { INLINE, SUBTITLE }
+
+/**
+ * Header status widget. Callers update it via [setRunning], [setIdle],
+ * [setComplete], [setFailed]. The chrome owns the visual; the panel owns the
+ * lifecycle and tells it when state changes.
+ */
+interface StatusChip {
+    val component: JComponent
+    fun setIdle()
+    fun setRunning(startedAtMs: Long)
+    fun setComplete(durationMs: Long)
+    fun setFailed(durationMs: Long)
+    /** Stop any internal timers; called when the chip is being thrown away. */
+    fun dispose() {}
+}
+
 sealed class ProbeChrome {
 
     // ── Block (DATASET / STEP / CACHE / ERROR) ─────────────────────────
 
     /** Extra bottom padding the caller should bake into the block's border. */
     abstract fun blockExtraBottom(kind: BlockKind): Int
+
+    /**
+     * Extra left padding the caller should bake into the block's border, on
+     * top of the kind-specific content padding. The polished timeline chrome
+     * uses this for the gutter that hosts the thread + node marker; legacy
+     * returns 0.
+     */
+    abstract fun blockExtraLeft(kind: BlockKind): Int
+
+    /**
+     * Text foreground colours for content baked into individual blocks.
+     * They differ between chromes because legacy paints opaque coloured cards
+     * (white-on-blue dataset, dark-teal-on-light-teal cache, etc.) while the
+     * polished/timeline chrome paints no card and relies on theme colours.
+     */
+    abstract fun datasetNameForeground(): Color
+    abstract fun datasetTargetForeground(): Color
+    abstract fun cacheLabelForeground(): Color
 
     /** Install per-instance chrome state (animator, listeners) on a block. */
     abstract fun installBlock(block: PipelineBlock)
@@ -123,7 +161,13 @@ sealed class ProbeChrome {
 
     // ── Connector ──────────────────────────────────────────────────────
 
-    abstract fun paintConnector(g: Graphics, w: Int, h: Int)
+    /**
+     * Build the visual link between two stacked blocks. Each chrome controls
+     * the whole component layout — legacy returns a panel with a vertical
+     * line + arrowhead, polished returns a thread continuation aligned with
+     * the block-side timeline thread.
+     */
+    abstract fun newConnector(label: String?): JComponent
 
     // ── Skipped notice ─────────────────────────────────────────────────
 
@@ -138,6 +182,43 @@ sealed class ProbeChrome {
      */
     abstract fun installTracebackToggle(block: JPanel, tracePanel: JPanel)
 
+    // ── New: information design + microinteractions ───────────────────
+
+    /** Pills/text summarising the diff totals on a step header. */
+    abstract fun newSummaryBadges(diffs: List<FieldDiff>): JComponent
+
+    /** A status chip shown in the tool window header (idle / running / etc). */
+    abstract fun newStatusChip(): StatusChip
+
+    /** A "no probe yet" empty-state widget shown in the content area. */
+    abstract fun newEmptyState(onPickDataset: () -> Unit): JComponent
+
+    /** Whether to hide UNCHANGED fields by default with a "show all" toggle. */
+    abstract val hideUnchangedFieldsByDefault: Boolean
+
+    /**
+     * Whether to render simple scalar modifications as a single inline row
+     * (`name  before → after`) instead of an expandable After:/Before: pair.
+     */
+    abstract val inlineScalarDiff: Boolean
+
+    /**
+     * Branch-picker placement on the dataset block.
+     * - INLINE: combo on the EAST side of the dataset header (legacy).
+     * - SUBTITLE: combo on a second line below the dataset name (polished).
+     */
+    abstract val datasetBranchPickerPlacement: BranchPickerPlacement
+
+    /** Whether toolbar buttons render icon-only with tooltips. */
+    abstract val iconOnlyToolbarButtons: Boolean
+
+    /**
+     * Apply chrome-specific microinteractions to a freshly-installed block.
+     * Polished emits a brief pulse on ERROR nodes and a flash on CACHE nodes;
+     * legacy is a no-op. Called from [installBlock] after the animator is set.
+     */
+    open fun installMicrointeractions(block: PipelineBlock) {}
+
     // ── Misc layout constants ──────────────────────────────────────────
 
     /** Horizontal gap in the step-block's "leftHeader" FlowLayout. */
@@ -149,11 +230,20 @@ sealed class ProbeChrome {
         var current: ProbeChrome = forCurrentMode()
             private set
 
-        fun forCurrentMode(): ProbeChrome = when (
-            SrForgeHighlightSettings.getInstance().state.pipelineDisplayMode
-        ) {
-            PipelineDisplayMode.LEGACY -> LegacyProbeChrome
-            PipelineDisplayMode.POLISHED -> PolishedProbeChrome
+        /**
+         * Resolve the active chrome from settings.
+         *
+         * The polished/timeline chrome is currently work-in-progress and
+         * not yet ready for users — we deliberately short-circuit to
+         * [LegacyProbeChrome] regardless of the stored display-mode value
+         * so existing settings (and the entire polished codepath) stay
+         * intact, but no user ever sees the unfinished view. When polished
+         * is ready, restore the original `when` over [PipelineDisplayMode].
+         */
+        fun forCurrentMode(): ProbeChrome {
+            @Suppress("UNUSED_VARIABLE")
+            val storedMode = SrForgeHighlightSettings.getInstance().state.pipelineDisplayMode
+            return LegacyProbeChrome
         }
 
         /** Refresh [current] from settings. Returns true if it changed. */
@@ -173,6 +263,12 @@ sealed class ProbeChrome {
 object LegacyProbeChrome : ProbeChrome() {
 
     override fun blockExtraBottom(kind: BlockKind): Int = 0
+
+    override fun blockExtraLeft(kind: BlockKind): Int = 0
+
+    override fun datasetNameForeground(): Color = Color.WHITE
+    override fun datasetTargetForeground(): Color = JBColor(Color(0xBBDEFB), Color(0x90CAF9))
+    override fun cacheLabelForeground(): Color = JBColor(Color(0x004D40), Color(0xB2DFDB))
 
     override fun installBlock(block: PipelineBlock) {
         // No animator, no listeners.
@@ -260,20 +356,46 @@ object LegacyProbeChrome : ProbeChrome() {
         button.putClientProperty("JButton.buttonType", null)
     }
 
-    override fun paintConnector(g: Graphics, w: Int, h: Int) {
-        val g2 = g as Graphics2D
-        g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-        g2.color = JBColor.border()
-        g2.stroke = BasicStroke(JBUI.scale(2).toFloat())
-        val cx = w / 2
-        g2.drawLine(cx, 0, cx, h - JBUI.scale(6))
-        val ay = h - JBUI.scale(2)
-        val aw = JBUI.scale(4)
-        g2.fillPolygon(
-            intArrayOf(cx - aw, cx, cx + aw),
-            intArrayOf(ay - aw * 2, ay, ay - aw * 2),
-            3,
-        )
+    override fun newConnector(label: String?): JComponent {
+        val connector = JPanel().apply {
+            layout = javax.swing.BoxLayout(this, javax.swing.BoxLayout.X_AXIS)
+            isOpaque = false
+            alignmentX = Component.LEFT_ALIGNMENT
+            maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(28))
+            border = JBUI.Borders.empty(2, 0)
+        }
+
+        connector.add(javax.swing.Box.createHorizontalStrut(JBUI.scale(24)))
+
+        connector.add(object : JComponent() {
+            override fun getPreferredSize() = Dimension(JBUI.scale(20), JBUI.scale(24))
+            override fun getMinimumSize() = preferredSize
+            override fun getMaximumSize() = preferredSize
+            override fun paintComponent(g: Graphics) {
+                val g2 = g as Graphics2D
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+                g2.color = JBColor.border()
+                g2.stroke = BasicStroke(JBUI.scale(2).toFloat())
+                val cx = width / 2
+                g2.drawLine(cx, 0, cx, height - JBUI.scale(6))
+                val ay = height - JBUI.scale(2)
+                val aw = JBUI.scale(4)
+                g2.fillPolygon(
+                    intArrayOf(cx - aw, cx, cx + aw),
+                    intArrayOf(ay - aw * 2, ay, ay - aw * 2),
+                    3,
+                )
+            }
+        })
+
+        if (label != null) {
+            connector.add(javax.swing.Box.createHorizontalStrut(JBUI.scale(4)))
+            connector.add(JBLabel(label).apply {
+                foreground = UIUtil.getInactiveTextColor()
+                font = font.deriveFont(Font.ITALIC, font.size - 1f)
+            })
+        }
+        return connector
     }
 
     override fun newSkippedNotice(message: String): JPanel {
@@ -311,30 +433,70 @@ object LegacyProbeChrome : ProbeChrome() {
     }
 
     override val stepLeftHeaderHgap: Int = 0
+
+    // ── New behaviours (preserve historical 0.4.4 visuals) ───────────
+
+    override fun newSummaryBadges(diffs: List<FieldDiff>): JComponent {
+        val summaryText = buildSummaryText(diffs)
+        return JBLabel(summaryText).apply {
+            foreground = UIUtil.getInactiveTextColor()
+            font = font.deriveFont(font.size - 1f)
+            border = JBUI.Borders.emptyRight(4)
+            isVisible = summaryText.isNotEmpty()
+        }
+    }
+
+    override fun newStatusChip(): StatusChip = LegacyStatusChip()
+
+    override fun newEmptyState(onPickDataset: () -> Unit): JComponent =
+        JBLabel("No probe results yet.").apply {
+            foreground = UIUtil.getInactiveTextColor()
+        }
+
+    override val hideUnchangedFieldsByDefault: Boolean = false
+    override val inlineScalarDiff: Boolean = false
+    override val datasetBranchPickerPlacement: BranchPickerPlacement = BranchPickerPlacement.INLINE
+    override val iconOnlyToolbarButtons: Boolean = false
 }
 
 // ════════════════════════════════════════════════════════════════════════
-//  POLISHED — gradient cards, drop shadows, hover lift, fade-in,
-//  animated chevrons, gradient progress comet, the works.
+//  POLISHED — modern vertical timeline. A single thread runs the entire
+//  length of the pipeline with circular node markers at each block.
+//  No cards, no shadows, no hover-lift — depth comes from typography,
+//  whitespace, and the strong vertical thread metaphor.
 // ════════════════════════════════════════════════════════════════════════
 
 object PolishedProbeChrome : ProbeChrome() {
 
-    override fun blockExtraBottom(kind: BlockKind): Int =
-        kind.polishedStyle.maxShadowOffset + JBUI.scale(2)
+    /** No drop shadow → no extra bottom padding needed. */
+    override fun blockExtraBottom(kind: BlockKind): Int = 0
+
+    /** Reserve room on the left for the timeline thread + node marker. */
+    override fun blockExtraLeft(kind: BlockKind): Int = TIMELINE_GUTTER
+
+    /** Theme-aware indigo, matching the dataset node marker on the thread. */
+    override fun datasetNameForeground(): Color = JBColor(Color(0x4338CA), Color(0xC7D2FE))
+    override fun datasetTargetForeground(): Color = UIUtil.getInactiveTextColor()
+    /** Theme-aware teal, matching the cache node ring on the thread. */
+    override fun cacheLabelForeground(): Color = JBColor(Color(0x0F766E), Color(0x5EEAD4))
 
     override fun installBlock(block: PipelineBlock) {
-        block.animator = BlockAnimator(block, block.kind.polishedStyle)
+        block.animator = BlockAnimator(block)
+        installMicrointeractions(block)
     }
 
     override fun uninstallBlock(block: PipelineBlock) {
         block.animator?.dispose()
         block.animator = null
+        block.pulse?.dispose()
+        block.pulse = null
     }
 
     override fun paintBlockBackground(block: PipelineBlock, g: Graphics) {
-        val animator = block.animator ?: return
-        paintPolishedCard(g, block.width, block.height, block.kind.polishedStyle, animator.shadowOffset)
+        // No card fill. The timeline thread + node marker are the entire chrome.
+        paintTimelineThread(g, 0, block.height)
+        val pulseAlpha = block.pulse?.intensity ?: 0f
+        paintTimelineNode(g, timelineNodeCenterY(block), block.kind, block.stepIndex, pulseAlpha)
     }
 
     override fun paintBlock(block: PipelineBlock, g: Graphics, paintSuper: (Graphics) -> Unit) {
@@ -343,30 +505,31 @@ object PolishedProbeChrome : ProbeChrome() {
     }
 
     override fun installFieldCard(card: FieldCard) {
-        card.isOpaque = false  // we paint our own rounded card on a transparent base
+        // No card chrome — fully transparent so the surrounding step bg shows.
+        card.isOpaque = false
     }
 
     override fun uninstallFieldCard(card: FieldCard) {
-        // Nothing to tear down — no animators or listeners on field cards.
+        // No animators or listeners to tear down.
     }
 
     override fun paintFieldCardBackground(card: FieldCard, g: Graphics) {
+        // Paint a small status dot at the left of the row for non-UNCHANGED
+        // fields. No background fill, no accent stripe — minimal, typographic.
+        val dotColor = when (card.status) {
+            FieldDiffStatus.ADDED -> FIELD_DOT_ADDED
+            FieldDiffStatus.MODIFIED -> FIELD_DOT_MODIFIED
+            FieldDiffStatus.REMOVED -> FIELD_DOT_REMOVED
+            FieldDiffStatus.UNCHANGED -> return
+        }
         val g2 = (g as Graphics2D).create() as Graphics2D
         try {
             g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-            val radius = JBUI.scale(8)
-            val statusBg = FieldDetailPanel.diffBackground(card.status) ?: UIUtil.getPanelBackground()
-            g2.color = statusBg
-            g2.fillRoundRect(0, 0, card.width, card.height, radius, radius)
-
-            val priorClip = g2.clip
-            g2.clip = RoundRectangle2D.Float(
-                0f, 0f, card.width.toFloat(), card.height.toFloat(),
-                radius.toFloat(), radius.toFloat(),
-            )
-            g2.color = FieldDetailPanel.diffBorderColor(card.status)
-            g2.fillRect(0, 0, JBUI.scale(3), card.height)
-            g2.clip = priorClip
+            g2.color = dotColor
+            val r = JBUI.scale(3)
+            val cx = JBUI.scale(4)
+            val cy = JBUI.scale(13)  // aligns with first text line in header
+            g2.fillOval(cx - r, cy - r, r * 2, r * 2)
         } finally {
             g2.dispose()
         }
@@ -375,7 +538,8 @@ object PolishedProbeChrome : ProbeChrome() {
     override fun fieldHeaderLegacyBg(status: FieldDiffStatus): Color? = null
     override fun fieldChildLegacyBg(status: FieldDiffStatus): Color? = null
 
-    override val fieldHeaderPadding: Border = JBUI.Borders.empty(3, 10, 3, 8)
+    /** Field-row inset on the left makes room for the status dot. */
+    override val fieldHeaderPadding: Border = JBUI.Borders.empty(3, 14, 3, 8)
 
     override fun newChevron(
         initialExpanded: Boolean,
@@ -394,62 +558,69 @@ object PolishedProbeChrome : ProbeChrome() {
         if (bar is PolishedProgressBar) bar.dispose()
     }
 
-    override val headerBorder: Border = JBUI.Borders.empty(8, 12, 8, 8)
+    /** Minimal header bar — single hairline divider at the bottom, no gradient. */
+    override val headerBorder: Border = JBUI.Borders.empty(10, 14, 10, 10)
     override val isHeaderOpaque: Boolean = false
 
     override fun paintHeaderBackground(g: Graphics, w: Int, h: Int): Boolean {
-        paintPolishedHeaderBackground(g, w, h)
+        val g2 = (g as Graphics2D).create() as Graphics2D
+        try {
+            g2.color = TIMELINE_THREAD_COLOR
+            g2.fillRect(0, h - 1, w, 1)
+        } finally {
+            g2.dispose()
+        }
         return true
     }
 
     override fun applyHeaderLabelStyle(label: JBLabel) {
+        // Medium weight, no upsize — clean and quiet.
         val base = UIUtil.getLabelFont()
-        label.font = base.deriveFont(Font.BOLD, base.size + 1f)
+        label.font = base.deriveFont(Font.BOLD)
     }
 
     override fun applyButtonStyle(button: JButton) {
         button.putClientProperty("JButton.buttonType", "roundRect")
     }
 
-    override fun paintConnector(g: Graphics, w: Int, h: Int) {
-        paintPolishedConnector(
-            g, w, h,
-            topColor = JBColor(Color(0xB0BEC5), Color(0x5C6770)),
-            bottomColor = JBColor(Color(0x546E7A), Color(0x90A4AE)),
-        )
-    }
-
-    override fun newSkippedNotice(message: String): JPanel {
-        val notice = object : JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(8), 0)) {
+    /**
+     * Build a connector that simply continues the timeline thread. No
+     * arrowheads — the visual flow IS the thread. Optional label appears
+     * to the right with generous spacing.
+     */
+    override fun newConnector(label: String?): JComponent {
+        val connector = object : JPanel(BorderLayout()) {
             override fun paintComponent(g: Graphics) {
-                val g2 = (g as Graphics2D).create() as Graphics2D
-                try {
-                    g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-                    val radius = JBUI.scale(8)
-                    g2.color = JBColor(Color(0xFFF8E1), Color(0x3D3520))
-                    g2.fillRoundRect(0, 0, width, height, radius, radius)
-                    val priorClip = g2.clip
-                    g2.clip = RoundRectangle2D.Float(
-                        0f, 0f, width.toFloat(), height.toFloat(),
-                        radius.toFloat(), radius.toFloat(),
-                    )
-                    g2.color = JBColor(Color(0xFFA000), Color(0xFFCA28))
-                    g2.fillRect(0, 0, JBUI.scale(3), height)
-                    g2.clip = priorClip
-                } finally {
-                    g2.dispose()
-                }
+                paintTimelineThread(g, 0, height)
             }
         }.apply {
             isOpaque = false
             alignmentX = Component.LEFT_ALIGNMENT
-            border = JBUI.Borders.empty(8, 12, 8, 12)
-            maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(32))
+            preferredSize = Dimension(0, JBUI.scale(20))
+            maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(20))
+        }
+        if (label != null) {
+            connector.add(JBLabel(label).apply {
+                foreground = UIUtil.getInactiveTextColor()
+                font = font.deriveFont(Font.ITALIC, font.size - 1f)
+                border = JBUI.Borders.emptyLeft(TIMELINE_GUTTER + JBUI.scale(6))
+            }, BorderLayout.WEST)
+        }
+        return connector
+    }
+
+    /** Skipped notice — a small inline label, no decorative card. */
+    override fun newSkippedNotice(message: String): JPanel {
+        val notice = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(6), 0)).apply {
+            isOpaque = false
+            alignmentX = Component.LEFT_ALIGNMENT
+            border = JBUI.Borders.empty(4, TIMELINE_GUTTER + JBUI.scale(6), 4, 14)
+            maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(24))
         }
         notice.add(JBLabel(AllIcons.General.Warning))
         notice.add(JBLabel(message).apply {
-            foreground = JBColor(Color(0x8B6A00), Color(0xFFD54F))
-            font = font.deriveFont(Font.PLAIN)
+            foreground = UIUtil.getInactiveTextColor()
+            font = font.deriveFont(Font.ITALIC, font.size - 1f)
         })
         return notice
     }
@@ -483,4 +654,240 @@ object PolishedProbeChrome : ProbeChrome() {
     }
 
     override val stepLeftHeaderHgap: Int = JBUI.scale(6)
+
+    // ── New behaviours ────────────────────────────────────────────────
+
+    override fun newSummaryBadges(diffs: List<FieldDiff>): JComponent {
+        val added = diffs.count { it.status == FieldDiffStatus.ADDED }
+        val removed = diffs.count { it.status == FieldDiffStatus.REMOVED }
+        val modified = diffs.count { it.status == FieldDiffStatus.MODIFIED }
+        val row = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0)).apply {
+            isOpaque = false
+            border = JBUI.Borders.emptyRight(4)
+        }
+        if (added > 0) row.add(makeStatusPill("+$added", FIELD_DOT_ADDED))
+        if (modified > 0) row.add(makeStatusPill("~$modified", FIELD_DOT_MODIFIED))
+        if (removed > 0) row.add(makeStatusPill("-$removed", FIELD_DOT_REMOVED))
+        return row
+    }
+
+    override fun newStatusChip(): StatusChip = PolishedStatusChip()
+
+    override fun newEmptyState(onPickDataset: () -> Unit): JComponent = PolishedEmptyState(onPickDataset)
+
+    override val hideUnchangedFieldsByDefault: Boolean = true
+    override val inlineScalarDiff: Boolean = true
+    override val datasetBranchPickerPlacement: BranchPickerPlacement = BranchPickerPlacement.SUBTITLE
+    override val iconOnlyToolbarButtons: Boolean = true
+
+    /**
+     * Polished microinteractions: a soft pulse on ERROR nodes (~1.5s loop)
+     * and a one-shot teal flash on CACHE nodes when they appear. The
+     * underlying [BlockPulse] handles all the timer plumbing and is
+     * disposed by [uninstallBlock] alongside the fade-in animator.
+     */
+    override fun installMicrointeractions(block: PipelineBlock) {
+        when (block.kind) {
+            BlockKind.ERROR -> block.pulse = BlockPulse(block, loop = true, durationMs = 1500)
+            BlockKind.CACHE -> block.pulse = BlockPulse(block, loop = false, durationMs = 700)
+            else -> {}
+        }
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════
+//  Shared helpers used by the chrome implementations
+// ════════════════════════════════════════════════════════════════════════
+
+/** Tally the diff counts into the legacy compact text form ("+1 -2 ~3"). */
+internal fun buildSummaryText(diffs: List<FieldDiff>): String {
+    val added = diffs.count { it.status == FieldDiffStatus.ADDED }
+    val removed = diffs.count { it.status == FieldDiffStatus.REMOVED }
+    val modified = diffs.count { it.status == FieldDiffStatus.MODIFIED }
+    val parts = mutableListOf<String>()
+    if (added > 0) parts.add("+$added")
+    if (removed > 0) parts.add("-$removed")
+    if (modified > 0) parts.add("~$modified")
+    return parts.joinToString(" ")
+}
+
+/** A small pill (rounded background + bold text in [color]). */
+internal fun makeStatusPill(text: String, color: JBColor): JComponent {
+    val pill = object : JBLabel(text) {
+        override fun paintComponent(g: Graphics) {
+            val g2 = (g as Graphics2D).create() as Graphics2D
+            try {
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+                g2.color = Color(color.red, color.green, color.blue, 36)
+                g2.fillRoundRect(0, 0, width, height, height, height)
+            } finally {
+                g2.dispose()
+            }
+            super.paintComponent(g)
+        }
+    }
+    pill.foreground = color
+    pill.font = pill.font.deriveFont(java.awt.Font.BOLD, pill.font.size - 1f)
+    pill.border = JBUI.Borders.empty(1, 8, 1, 8)
+    pill.isOpaque = false
+    return pill
+}
+
+/** Legacy status chip: a plain JBLabel matching the historical headerLabel UX. */
+internal class LegacyStatusChip : StatusChip {
+    private val label = JBLabel("")
+
+    override val component: JComponent get() = label
+    override fun setIdle() { label.text = ""; label.icon = null }
+    override fun setRunning(startedAtMs: Long) { label.text = "" }
+    override fun setComplete(durationMs: Long) { label.text = "" }
+    override fun setFailed(durationMs: Long) { label.text = "" }
+}
+
+/**
+ * Polished status chip: a coloured pill with an elapsed-time counter for
+ * the running state. The pill background is tinted to the state colour;
+ * a 200 ms-tick timer keeps the time fresh while running.
+ */
+internal class PolishedStatusChip : StatusChip {
+
+    private enum class State { IDLE, RUNNING, COMPLETE, FAILED }
+
+    private var state: State = State.IDLE
+    private var runStartedAt: Long = 0
+    private var runDurationMs: Long = 0
+
+    private val pill = object : JBLabel("Idle") {
+        override fun paintComponent(g: Graphics) {
+            val (text, fg, bg) = renderingFor(state)
+            this.text = if (state == State.RUNNING) {
+                "$text  ${formatElapsed(System.currentTimeMillis() - runStartedAt)}"
+            } else if (state == State.COMPLETE || state == State.FAILED) {
+                "$text  ${formatElapsed(runDurationMs)}"
+            } else text
+            this.foreground = fg
+
+            val g2 = (g as Graphics2D).create() as Graphics2D
+            try {
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+                g2.color = Color(bg.red, bg.green, bg.blue, 40)
+                g2.fillRoundRect(0, 0, width, height, height, height)
+            } finally {
+                g2.dispose()
+            }
+            super.paintComponent(g)
+        }
+    }.apply {
+        font = font.deriveFont(java.awt.Font.BOLD, font.size - 1f)
+        border = JBUI.Borders.empty(2, 10, 2, 10)
+        isOpaque = false
+    }
+
+    private val timer: Timer = Timer(200) { pill.repaint() }
+
+    override val component: JComponent get() = pill
+
+    override fun setIdle() {
+        state = State.IDLE
+        timer.stop()
+        pill.repaint()
+    }
+
+    override fun setRunning(startedAtMs: Long) {
+        state = State.RUNNING
+        runStartedAt = startedAtMs
+        if (!timer.isRunning) timer.start()
+        pill.repaint()
+    }
+
+    override fun setComplete(durationMs: Long) {
+        state = State.COMPLETE
+        runDurationMs = durationMs
+        timer.stop()
+        pill.repaint()
+    }
+
+    override fun setFailed(durationMs: Long) {
+        state = State.FAILED
+        runDurationMs = durationMs
+        timer.stop()
+        pill.repaint()
+    }
+
+    override fun dispose() {
+        timer.stop()
+    }
+
+    private fun renderingFor(s: State): Triple<String, JBColor, JBColor> = when (s) {
+        State.IDLE -> Triple("Idle", UIUtil.getInactiveTextColor() as? JBColor ?: JBColor(Color(0x71717A), Color(0xA1A1AA)), JBColor(Color(0x71717A), Color(0xA1A1AA)))
+        State.RUNNING -> Triple("Running", JBColor(Color(0x2563EB), Color(0x60A5FA)), JBColor(Color(0x2563EB), Color(0x60A5FA)))
+        State.COMPLETE -> Triple("Complete", JBColor(Color(0x059669), Color(0x34D399)), JBColor(Color(0x059669), Color(0x34D399)))
+        State.FAILED -> Triple("Failed", JBColor(Color(0xDC2626), Color(0xF87171)), JBColor(Color(0xDC2626), Color(0xF87171)))
+    }
+
+    private fun formatElapsed(ms: Long): String = when {
+        ms < 1000 -> "${ms}ms"
+        ms < 60_000 -> "%.1fs".format(ms / 1000.0)
+        else -> {
+            val totalSec = ms / 1000
+            val min = totalSec / 60
+            val sec = totalSec % 60
+            "%d:%02d".format(min, sec)
+        }
+    }
+}
+
+/**
+ * Polished empty-state widget: a centred icon, a one-line tagline, and a
+ * primary action button. Shown when the probe panel has no results yet.
+ */
+internal class PolishedEmptyState(private val onPickDataset: () -> Unit) : JPanel() {
+    init {
+        layout = java.awt.GridBagLayout()
+        isOpaque = false
+        alignmentX = Component.LEFT_ALIGNMENT
+
+        val inner = JPanel().apply {
+            layout = javax.swing.BoxLayout(this, javax.swing.BoxLayout.Y_AXIS)
+            isOpaque = false
+        }
+
+        val icon = JBLabel(ProbeIcons.Probe).apply {
+            alignmentX = Component.CENTER_ALIGNMENT
+        }
+
+        val title = JBLabel("No probe yet").apply {
+            font = font.deriveFont(java.awt.Font.BOLD, font.size + 4f)
+            alignmentX = Component.CENTER_ALIGNMENT
+            foreground = UIUtil.getLabelForeground()
+            border = JBUI.Borders.emptyTop(JBUI.scale(12))
+        }
+
+        val subtitle = JBLabel("Pick a dataset from the open YAML to trace its pipeline").apply {
+            alignmentX = Component.CENTER_ALIGNMENT
+            foreground = UIUtil.getInactiveTextColor()
+            border = JBUI.Borders.emptyTop(JBUI.scale(4))
+        }
+
+        val cta = JButton("Pick dataset").apply {
+            putClientProperty("JButton.buttonType", "roundRect")
+            alignmentX = Component.CENTER_ALIGNMENT
+            addActionListener { onPickDataset() }
+        }
+        cta.maximumSize = cta.preferredSize
+        val ctaWrap = JPanel().apply {
+            layout = javax.swing.BoxLayout(this, javax.swing.BoxLayout.X_AXIS)
+            isOpaque = false
+            alignmentX = Component.CENTER_ALIGNMENT
+            border = JBUI.Borders.emptyTop(JBUI.scale(14))
+            add(cta)
+        }
+
+        inner.add(icon)
+        inner.add(title)
+        inner.add(subtitle)
+        inner.add(ctaWrap)
+
+        add(inner)  // GridBag centres a single child by default
+    }
 }

@@ -84,7 +84,7 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
         add(contentPanel, BorderLayout.NORTH)
     }
     private val scrollPane = JBScrollPane(contentAnchor)
-    private val headerLabel = JBLabel("No probe results yet.").also {
+    private val headerLabel = JBLabel("").also {
         chrome.applyHeaderLabelStyle(it)
     }
 
@@ -95,7 +95,6 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
         icon = AllIcons.Actions.Refresh
         toolTipText = "Re-run the last probe (same dataset and settings)"
         isEnabled = false
-        chrome.applyButtonStyle(this)
         addActionListener { rerunProbe() }
     }
 
@@ -106,7 +105,6 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
             "(frees memory used by snapshots and tensor files)"
         isEnabled = false
         isVisible = false
-        chrome.applyButtonStyle(this)
         addActionListener { stopAndClear() }
     }
 
@@ -146,7 +144,6 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
         icon = ProbeIcons.Probe
         toolTipText = "Pick a dataset to probe from the open YAML " +
             "(hover gold markers to preview the path, click to run)"
-        chrome.applyButtonStyle(this)
         addActionListener { enterMarkerMode() }
     }
 
@@ -188,22 +185,61 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
         }
     }
 
+    /** Chrome-supplied status indicator on the left of the header. */
+    private var statusChip: StatusChip = chrome.newStatusChip()
+    private val statusChipHolder: JPanel = JPanel(BorderLayout()).apply {
+        isOpaque = false
+        add(statusChip.component, BorderLayout.CENTER)
+    }
+
+    /**
+     * Holder for the WEST side of the header: status chip + a small details
+     * label (current step name during run, etc). The chip is mutable via
+     * [statusChipHolder]; the label is the existing [headerLabel].
+     */
+    private val headerLeft: JPanel = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(8), 0)).apply {
+        isOpaque = false
+        add(statusChipHolder)
+        add(headerLabel)
+    }
+
+    /** Toolbar buttons holder. Captured to apply chrome-specific styling on hot-swap. */
+    private val toolbarButtons: JPanel = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(4), 0)).apply {
+        isOpaque = false
+        add(stopButton)
+        add(rerunButton)
+        add(configureButton)
+    }
+
+    /**
+     * Two-card content area: "empty" shows the chrome's empty-state widget;
+     * "content" shows the scrolling pipeline view. We swap by name when
+     * [recordedActions] transitions between empty and non-empty.
+     */
+    private val contentCardLayout = CardLayout()
+    private val contentCards: JPanel = JPanel(contentCardLayout).apply {
+        isOpaque = false
+    }
+    private var emptyStateView: JComponent = chrome.newEmptyState { enterMarkerMode() }
+
+    /** Wall-clock timestamp when the currently-running probe started. */
+    private var probeStartTime: Long = 0L
+
 
     init {
         headerPanel.border = chrome.headerBorder
         headerPanel.isOpaque = chrome.isHeaderOpaque
-        headerPanel.add(headerLabel, BorderLayout.WEST)
+        headerPanel.add(headerLeft, BorderLayout.WEST)
+        headerPanel.add(toolbarButtons, BorderLayout.EAST)
 
-        val buttonBar = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(4), 0)).apply {
-            isOpaque = false
-            add(stopButton)
-            add(rerunButton)
-            add(configureButton)
-        }
-        headerPanel.add(buttonBar, BorderLayout.EAST)
+        contentCards.add(emptyStateView, CARD_EMPTY)
+        contentCards.add(scrollPane, CARD_CONTENT)
+        contentCardLayout.show(contentCards, CARD_EMPTY)
+
+        applyToolbarButtonStyles()
 
         add(headerPanel, BorderLayout.NORTH)
-        add(scrollPane, BorderLayout.CENTER)
+        add(contentCards, BorderLayout.CENTER)
 
         // Hot-swap: when the display-mode setting changes, refresh the chrome
         // and rebuild every block from the recorded actions. The probe data
@@ -226,6 +262,27 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
     private val recordedActions = mutableListOf<RenderAction>()
 
     /**
+     * Apply chrome-aware text/icon styling to every toolbar button. Icon-only
+     * chromes hide the button label (icon + tooltip remain); text-bearing
+     * chromes restore the original text from a stashed client property.
+     */
+    private fun applyToolbarButtonStyles() {
+        styleToolbarButton(rerunButton, primary = false)
+        styleToolbarButton(stopButton, primary = false)
+        styleToolbarButton(configureButton, primary = true)
+    }
+
+    private fun styleToolbarButton(button: JButton, primary: Boolean) {
+        chrome.applyButtonStyle(button)
+        if (button.getClientProperty(ORIGINAL_TEXT_KEY) == null && button.text != null) {
+            button.putClientProperty(ORIGINAL_TEXT_KEY, button.text)
+        }
+        val origText = button.getClientProperty(ORIGINAL_TEXT_KEY) as? String
+        val shouldHideText = chrome.iconOnlyToolbarButtons && !primary && button.icon != null
+        button.text = if (shouldHideText) null else origText
+    }
+
+    /**
      * Apply the current chrome to top-level widgets (header bar, buttons,
      * progress bar), then clear [contentPanel] and replay every block from
      * [recordedActions]. Called when the user toggles display mode while
@@ -237,12 +294,30 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
 
         // Re-style top widgets.
         chrome.applyHeaderLabelStyle(headerLabel)
-        chrome.applyButtonStyle(rerunButton)
-        chrome.applyButtonStyle(stopButton)
-        chrome.applyButtonStyle(configureButton)
+        applyToolbarButtonStyles()
         headerPanel.border = chrome.headerBorder
         headerPanel.isOpaque = chrome.isHeaderOpaque
         headerPanel.repaint()
+
+        // Swap the status chip — preserve current state in the new instance.
+        statusChip.dispose()
+        statusChip = chrome.newStatusChip()
+        statusChipHolder.removeAll()
+        statusChipHolder.add(statusChip.component, BorderLayout.CENTER)
+        // Re-emit the current state through the fresh chip.
+        when {
+            stopButton.isVisible && stopButton.isEnabled -> statusChip.setRunning(probeStartTime)
+            // Other states (idle/complete/failed) — we don't track post-state,
+            // so default to idle on chrome swap. Practical enough for now.
+            else -> statusChip.setIdle()
+        }
+        statusChipHolder.revalidate()
+        statusChipHolder.repaint()
+
+        // Swap the empty-state view.
+        contentCards.remove(emptyStateView)
+        emptyStateView = chrome.newEmptyState { enterMarkerMode() }
+        contentCards.add(emptyStateView, CARD_EMPTY)
 
         // Swap the progress-bar widget (each chrome owns its own type).
         val wasProgressShown = (0 until contentPanel.componentCount)
@@ -261,23 +336,141 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
         }
         contentPanel.revalidate()
         contentPanel.repaint()
+
+        // If still nothing to show, swap back to the empty card.
+        if (recordedActions.isEmpty() && !wasProgressShown) {
+            contentCardLayout.show(contentCards, CARD_EMPTY)
+        }
     }
+
 
     private fun replay(action: RenderAction) {
         when (action) {
             is RenderAction.Dataset ->
                 addDatasetBlock(action.name, action.target, action.node)
-            is RenderAction.Cache -> addCacheBlock(action.cacheDir)
-            is RenderAction.Step -> addStepBlock(action.snapshot, action.diffs)
+            is RenderAction.Cache -> addCacheBlock(action.cacheDir, action.yamlOffset)
+            is RenderAction.Step -> addStepBlock(action.snapshot, action.diffs, action.yamlOffset)
             is RenderAction.ErrorStep ->
-                addErrorStepBlock(action.snapshot, action.errorMessage, action.errorTraceback)
+                addErrorStepBlock(action.snapshot, action.errorMessage, action.errorTraceback, action.yamlOffset)
             is RenderAction.InitError ->
-                addInitErrorBlock(action.errorMessage, action.errorTraceback)
+                addInitErrorBlock(action.errorMessage, action.errorTraceback, action.yamlOffset)
             is RenderAction.TopLevelError ->
                 addTopLevelErrorBlock(action.errorMessage, action.errorTraceback)
             is RenderAction.Connector -> addConnector(action.label)
             is RenderAction.Skipped -> addSkippedNotice()
         }
+    }
+
+    /**
+     * A compact icon button rendered on each block (when its YAML location is
+     * known) that, when clicked, opens the YAML in the editor, scrolls to
+     * the corresponding mapping, and flashes a 1-second highlight on the
+     * whole block — useful for jumping between the pipeline view and the
+     * source of truth.
+     */
+    private fun createGoToButton(offset: Int): JButton = JButton(AllIcons.Actions.EditSource).apply {
+        toolTipText = "Go to YAML definition"
+        preferredSize = Dimension(JBUI.scale(22), JBUI.scale(22))
+        maximumSize = preferredSize
+        isFocusPainted = false
+        isContentAreaFilled = false
+        isBorderPainted = false
+        margin = JBUI.emptyInsets()
+        cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+        addActionListener { navigateAndFlashYaml(offset) }
+    }
+
+    /**
+     * Open the configured YAML in the editor, scroll-centre on the mapping
+     * that contains [offset], and play a brief alpha-fading highlight over
+     * the whole mapping (~1 s) so the user's eye lands on it.
+     */
+    private fun navigateAndFlashYaml(offset: Int) {
+        val cfg = lastRunConfig ?: return
+        val vFile = LocalFileSystem.getInstance().findFileByIoFile(java.io.File(cfg.yamlFilePath)) ?: return
+        val descriptor = com.intellij.openapi.fileEditor.OpenFileDescriptor(project, vFile, offset)
+        val editor = FileEditorManager.getInstance(project).openTextEditor(descriptor, true) ?: return
+
+        val psiFile = PsiManager.getInstance(project).findFile(vFile) as? YAMLFile
+        val element = psiFile?.findElementAt(offset) ?: psiFile?.findElementAt(offset + 1)
+        val mapping = element?.let { PsiTreeUtil.getParentOfType(it, YAMLMapping::class.java) }
+        val range = mapping?.textRange ?: TextRange(offset, (offset + 1).coerceAtMost(editor.document.textLength))
+
+        // Centre on the start of the mapping.
+        editor.scrollingModel.scrollTo(
+            editor.offsetToLogicalPosition(range.startOffset),
+            ScrollType.CENTER,
+        )
+
+        flashYamlRange(editor, range)
+    }
+
+    /**
+     * Add a temporary custom-rendered highlight over [range] and animate
+     * its alpha (0 → peak → 0) over ~1 s, then remove. The highlighter is
+     * painted via a [com.intellij.openapi.editor.markup.CustomHighlighterRenderer]
+     * so we can drive the alpha from a Swing Timer without recreating the
+     * highlighter every frame.
+     */
+    private fun flashYamlRange(editor: Editor, range: TextRange) {
+        val markup = editor.markupModel
+        val highlighter = markup.addRangeHighlighter(
+            range.startOffset,
+            range.endOffset,
+            com.intellij.openapi.editor.markup.HighlighterLayer.LAST + 1,
+            null,
+            com.intellij.openapi.editor.markup.HighlighterTargetArea.EXACT_RANGE,
+        )
+
+        val accent = JBColor(Color(0xFFC107), Color(0xFFD54F))
+        val durationMs = 1000L
+        val startedAt = System.currentTimeMillis()
+
+        highlighter.customRenderer = com.intellij.openapi.editor.markup.CustomHighlighterRenderer { ed, hl, g ->
+            val elapsed = System.currentTimeMillis() - startedAt
+            val t = (elapsed.toDouble() / durationMs).coerceIn(0.0, 1.0)
+            val alpha = when {
+                t < 0.15 -> t / 0.15                 // fade-in
+                t < 0.70 -> 1.0                       // hold
+                else -> ((1.0 - t) / 0.30).coerceAtLeast(0.0)  // fade-out
+            }
+            val peak = 95
+            val a = (alpha * peak).toInt().coerceIn(0, 255)
+            if (a <= 0) return@CustomHighlighterRenderer
+
+            val g2 = (g as Graphics2D).create() as Graphics2D
+            try {
+                g2.color = Color(accent.red, accent.green, accent.blue, a)
+                val startPos = ed.offsetToLogicalPosition(hl.startOffset)
+                val endPos = ed.offsetToLogicalPosition(hl.endOffset)
+                val lineHeight = ed.lineHeight
+                val startXY = ed.logicalPositionToXY(startPos)
+                val endXY = ed.logicalPositionToXY(endPos)
+                val visibleArea = ed.scrollingModel.visibleArea
+                val left = visibleArea.x
+                val right = visibleArea.x + visibleArea.width
+                val top = startXY.y
+                val bottomLine = (endPos.line - startPos.line + 1)
+                val bottom = startXY.y + bottomLine * lineHeight
+                g2.fillRoundRect(left + JBUI.scale(2), top, right - left - JBUI.scale(4), bottom - top, JBUI.scale(6), JBUI.scale(6))
+                // endXY is not used directly for painting because we span the
+                // viewport width and the line-based bottom suffices for a
+                // block-style highlight; reference it to avoid an unused warning.
+                @Suppress("UNUSED_VARIABLE") val unused = endXY
+            } finally {
+                g2.dispose()
+            }
+        }
+
+        val animTimer = javax.swing.Timer(16) {
+            val elapsed = System.currentTimeMillis() - startedAt
+            editor.contentComponent.repaint()
+            if (elapsed >= durationMs) {
+                (it.source as javax.swing.Timer).stop()
+                try { markup.removeHighlighter(highlighter) } catch (_: Throwable) {}
+            }
+        }
+        animTimer.start()
     }
 
     // ── Streaming execution ────────────────────────────────────────────
@@ -301,6 +494,8 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
         rerunButton.isEnabled = false
         stopButton.isEnabled = true
         stopButton.isVisible = true
+        probeStartTime = System.currentTimeMillis()
+        statusChip.setRunning(probeStartTime)
         headerLabel.text = "Running probe..."
         headerLabel.icon = null
         progressLabel.text = "Starting..."
@@ -309,6 +504,7 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
         contentPanel.add(progressStrip)
         contentPanel.revalidate()
         contentPanel.repaint()
+        contentCardLayout.show(contentCards, CARD_CONTENT)
 
         // Build path→DatasetNode map for cache dir lookup on dataset_end
         val nodeMap = buildNodeMap(config.pipeline)
@@ -321,11 +517,22 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
         // Streaming state — mutated on EDT by the onEvent callback
         var lastSnapshot: EntrySnapshot? = null
         var hasErrors = false
+        // Which dataset's pipeline we're currently emitting blocks from.
+        // Used to resolve the YAML offset of each step's transform so the
+        // "Go to" button can navigate to the right YAML mapping.
+        var currentDataset: DatasetNode? = null
+
+        fun transformOffsetFor(stepIndex: Int): Int? {
+            val ds = currentDataset ?: return null
+            if (stepIndex <= 0) return ds.yamlOffset  // entry → dataset itself
+            return ds.transforms.getOrNull(stepIndex - 1)?.yamlOffset ?: ds.yamlOffset
+        }
 
         val onEvent: (ProbeEvent) -> Unit = { event ->
             when (event) {
                 is ProbeEvent.DatasetStart -> {
                     val node = nodeMap[event.datasetPath]
+                    currentDataset = node
                     addDatasetBlock(event.datasetName, event.datasetTarget, node)
                     progressLabel.text = "Loading ${event.datasetName}..."
                 }
@@ -342,7 +549,7 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
                         }
                     }
                     addConnector(null)
-                    addStepBlock(snapshot, diffs)
+                    addStepBlock(snapshot, diffs, transformOffsetFor(snapshot.stepIndex))
                     lastSnapshot = snapshot
                     progressLabel.text = if (snapshot.stepIndex == 0) {
                         "Entry from ${snapshot.stepLabel}"
@@ -359,12 +566,17 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
                         isBatched = false,
                     )
                     addConnector(null)
-                    addErrorStepBlock(errorSnapshot, event.errorMessage, event.errorTraceback)
+                    addErrorStepBlock(
+                        errorSnapshot,
+                        event.errorMessage,
+                        event.errorTraceback,
+                        transformOffsetFor(event.stepIndex),
+                    )
                     progressLabel.text = "Error at step ${event.stepIndex}: ${event.stepLabel}"
                 }
                 is ProbeEvent.InitError -> {
                     hasErrors = true
-                    addInitErrorBlock(event.errorMessage, event.errorTraceback)
+                    addInitErrorBlock(event.errorMessage, event.errorTraceback, currentDataset?.yamlOffset)
                     progressLabel.text = "Dataset init failed"
                 }
                 is ProbeEvent.Connector -> {
@@ -381,16 +593,18 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
                     val cacheDir = node?.cacheDir
                     if (cacheDir != null) {
                         addConnector(null)
-                        addCacheBlock(cacheDir)
+                        addCacheBlock(cacheDir, node.yamlOffset)
                     }
                 }
                 is ProbeEvent.Complete -> {
                     if (hasErrors) {
-                        headerLabel.text = "Pipeline probe failed at step (${event.executionTimeMs}ms)"
+                        statusChip.setFailed(event.executionTimeMs)
+                        headerLabel.text = ""
                         headerLabel.icon = UIUtil.getErrorIcon()
                     } else {
-                        headerLabel.text = "Pipeline probe completed in ${event.executionTimeMs}ms"
-                        headerLabel.icon = ProbeIcons.Probe
+                        statusChip.setComplete(event.executionTimeMs)
+                        headerLabel.text = ""
+                        headerLabel.icon = null
                     }
                     rerunButton.isEnabled = lastRunConfig != null
                     stopButton.isEnabled = hasState
@@ -628,25 +842,28 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
 
     private fun addDatasetBlock(name: String, target: String, node: DatasetNode? = null) {
         recordedActions += RenderAction.Dataset(name, target, node)
+        val isSubtitleLayout = chrome.datasetBranchPickerPlacement == BranchPickerPlacement.SUBTITLE
         val block = PipelineBlock(BlockKind.DATASET).apply {
-            layout = BorderLayout()
-            border = JBUI.Borders.empty(10, 14, 10 + extraBottom, 14)
-            maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(48) + extraBottom)
+            goToYamlOffset = node?.yamlOffset
+            if (isSubtitleLayout) {
+                layout = BoxLayout(this, BoxLayout.Y_AXIS)
+                border = JBUI.Borders.empty(12, 14 + extraLeft, 12 + extraBottom, 14)
+            } else {
+                layout = BorderLayout()
+                border = JBUI.Borders.empty(10, 14 + extraLeft, 10 + extraBottom, 14)
+                maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(48) + extraBottom)
+            }
         }
 
         val nameLabel = JBLabel(name).apply {
-            foreground = Color.WHITE
+            foreground = chrome.datasetNameForeground()
             font = font.deriveFont(Font.BOLD, font.size + 2f)
             icon = ProbeIcons.Probe
             iconTextGap = JBUI.scale(8)
+            alignmentX = Component.LEFT_ALIGNMENT
         }
-        block.add(nameLabel, BorderLayout.WEST)
 
-        // Composite datasets (e.g. ConcatDataset) get an inline branch picker
-        // in place of the target FQN label. Changing the selection re-runs the
-        // probe with the new branch choice so the upstream pipeline rendered
-        // above this block updates accordingly.
-        if (node != null && node.branches.isNotEmpty()) {
+        val subtitleOrInline: JComponent = if (node != null && node.branches.isNotEmpty()) {
             val compositeKey = "${node.path}.params.${node.branchesParamKey ?: "datasets"}"
             val currentIdx = (lastRunConfig?.branchChoices?.get(compositeKey) ?: 0)
                 .coerceIn(0, node.branches.size - 1)
@@ -654,6 +871,7 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
             val combo = ComboBox(branchNames.toTypedArray()).apply {
                 selectedIndex = currentIdx
                 toolTipText = target
+                alignmentX = Component.LEFT_ALIGNMENT
             }
             combo.addActionListener {
                 if (!rerunButton.isEnabled) return@addActionListener  // probe running
@@ -667,42 +885,71 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
                 rerunProbe()
             }
             attachBranchPreviewOnHover(combo, node)
-            block.add(combo, BorderLayout.EAST)
+            combo
         } else {
-            val targetLabel = JBLabel(target).apply {
-                foreground = JBColor(Color(0xBBDEFB), Color(0x90CAF9))
+            JBLabel(target).apply {
+                foreground = chrome.datasetTargetForeground()
                 font = font.deriveFont(font.size - 1f)
+                alignmentX = Component.LEFT_ALIGNMENT
             }
-            block.add(targetLabel, BorderLayout.EAST)
+        }
+
+        val goToBtn = block.goToYamlOffset?.let { createGoToButton(it) }
+        if (isSubtitleLayout) {
+            val nameRow = JPanel(BorderLayout()).apply {
+                isOpaque = false
+                alignmentX = Component.LEFT_ALIGNMENT
+                add(nameLabel, BorderLayout.WEST)
+                if (goToBtn != null) add(goToBtn, BorderLayout.EAST)
+            }
+            block.add(nameRow)
+            block.add(Box.createVerticalStrut(JBUI.scale(4)))
+            block.add(subtitleOrInline)
+        } else {
+            block.add(nameLabel, BorderLayout.WEST)
+            if (goToBtn != null) {
+                val eastWrap = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(4), 0)).apply {
+                    isOpaque = false
+                    add(subtitleOrInline)
+                    add(goToBtn)
+                }
+                block.add(eastWrap, BorderLayout.EAST)
+            } else {
+                block.add(subtitleOrInline, BorderLayout.EAST)
+            }
         }
 
         contentPanel.add(block)
     }
 
-    private fun addCacheBlock(cacheDir: String) {
-        recordedActions += RenderAction.Cache(cacheDir)
+    private fun addCacheBlock(cacheDir: String, yamlOffset: Int? = null) {
+        recordedActions += RenderAction.Cache(cacheDir, yamlOffset)
         val block = PipelineBlock(BlockKind.CACHE).apply {
+            goToYamlOffset = yamlOffset
             layout = BorderLayout()
-            border = JBUI.Borders.empty(8, 14, 8 + extraBottom, 14)
+            border = JBUI.Borders.empty(8, 14 + extraLeft, 8 + extraBottom, 14)
             maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(40) + extraBottom)
         }
 
         val label = JBLabel("Cached \u2192 $cacheDir").apply {
-            foreground = JBColor(Color(0x004D40), Color(0xB2DFDB))
+            foreground = chrome.cacheLabelForeground()
             font = font.deriveFont(Font.BOLD)
             icon = AllIcons.Actions.Lightning
             iconTextGap = JBUI.scale(6)
         }
         block.add(label, BorderLayout.WEST)
+        block.goToYamlOffset?.let { block.add(createGoToButton(it), BorderLayout.EAST) }
 
         contentPanel.add(block)
     }
 
-    private fun addStepBlock(snapshot: EntrySnapshot, diffs: List<FieldDiff>) {
-        recordedActions += RenderAction.Step(snapshot, diffs)
+    private fun addStepBlock(snapshot: EntrySnapshot, diffs: List<FieldDiff>, yamlOffset: Int? = null) {
+        recordedActions += RenderAction.Step(snapshot, diffs, yamlOffset)
         val block = PipelineBlock(BlockKind.STEP).apply {
+            stepIndex = snapshot.stepIndex
+            goToYamlOffset = yamlOffset
             layout = BoxLayout(this, BoxLayout.Y_AXIS)
-            border = JBUI.Borders.empty(10, 12, 10 + extraBottom, 12)
+            border = JBUI.Borders.empty(10, 12 + extraLeft, 10 + extraBottom, 12)
             maximumSize = Dimension(Int.MAX_VALUE, Int.MAX_VALUE)
         }
 
@@ -737,16 +984,12 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
             add(stepNameLabel)
         }
         headerRow.add(leftHeader, BorderLayout.WEST)
-
-        // Summary badges on the right
-        val summaryText = buildSummaryBadges(diffs)
-        if (summaryText.isNotEmpty()) {
-            headerRow.add(JBLabel(summaryText).apply {
-                foreground = UIUtil.getInactiveTextColor()
-                font = font.deriveFont(font.size - 1f)
-                border = JBUI.Borders.emptyRight(4)
-            }, BorderLayout.EAST)
+        val rightSide = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(4), 0)).apply {
+            isOpaque = false
+            add(chrome.newSummaryBadges(diffs))
+            block.goToYamlOffset?.let { add(createGoToButton(it)) }
         }
+        headerRow.add(rightSide, BorderLayout.EAST)
 
         headerRow.addMouseListener(object : MouseAdapter() {
             override fun mouseClicked(e: MouseEvent) {
@@ -779,11 +1022,18 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
         contentPanel.add(block)
     }
 
-    private fun addErrorStepBlock(snapshot: EntrySnapshot, errorMessage: String, errorTraceback: String?) {
-        recordedActions += RenderAction.ErrorStep(snapshot, errorMessage, errorTraceback)
+    private fun addErrorStepBlock(
+        snapshot: EntrySnapshot,
+        errorMessage: String,
+        errorTraceback: String?,
+        yamlOffset: Int? = null,
+    ) {
+        recordedActions += RenderAction.ErrorStep(snapshot, errorMessage, errorTraceback, yamlOffset)
         val block = PipelineBlock(BlockKind.ERROR).apply {
+            stepIndex = snapshot.stepIndex
+            goToYamlOffset = yamlOffset
             layout = BoxLayout(this, BoxLayout.Y_AXIS)
-            border = JBUI.Borders.empty(10, 12, 10 + extraBottom, 12)
+            border = JBUI.Borders.empty(10, 12 + extraLeft, 10 + extraBottom, 12)
             maximumSize = Dimension(Int.MAX_VALUE, Int.MAX_VALUE)
         }
 
@@ -804,11 +1054,16 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
             foreground = JBColor(Color(0xC62828), Color(0xEF5350))
         })
         headerRow.add(leftHeader, BorderLayout.WEST)
-        headerRow.add(JBLabel("step ${snapshot.stepIndex}").apply {
-            foreground = UIUtil.getInactiveTextColor()
-            font = font.deriveFont(font.size - 1f)
-            border = JBUI.Borders.emptyRight(4)
-        }, BorderLayout.EAST)
+        val errorRight = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(4), 0)).apply {
+            isOpaque = false
+            add(JBLabel("step ${snapshot.stepIndex}").apply {
+                foreground = UIUtil.getInactiveTextColor()
+                font = font.deriveFont(font.size - 1f)
+                border = JBUI.Borders.emptyRight(4)
+            })
+            block.goToYamlOffset?.let { add(createGoToButton(it)) }
+        }
+        headerRow.add(errorRight, BorderLayout.EAST)
         block.add(headerRow)
 
         // Error message
@@ -824,25 +1079,32 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
         contentPanel.add(block)
     }
 
-    private fun addInitErrorBlock(errorMessage: String, errorTraceback: String?) {
-        recordedActions += RenderAction.InitError(errorMessage, errorTraceback)
+    private fun addInitErrorBlock(errorMessage: String, errorTraceback: String?, yamlOffset: Int? = null) {
+        recordedActions += RenderAction.InitError(errorMessage, errorTraceback, yamlOffset)
         val block = PipelineBlock(BlockKind.ERROR).apply {
+            goToYamlOffset = yamlOffset
             layout = BoxLayout(this, BoxLayout.Y_AXIS)
-            border = JBUI.Borders.empty(10, 12, 10 + extraBottom, 12)
+            border = JBUI.Borders.empty(10, 12 + extraLeft, 10 + extraBottom, 12)
             maximumSize = Dimension(Int.MAX_VALUE, Int.MAX_VALUE)
         }
 
-        val headerRow = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
+        val headerRow = JPanel(BorderLayout()).apply {
             isOpaque = false
             alignmentX = Component.LEFT_ALIGNMENT
+            maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(28))
         }
-        headerRow.add(JBLabel(UIUtil.getErrorIcon()).apply {
-            border = JBUI.Borders.emptyRight(6)
-        })
-        headerRow.add(JBLabel("Instantiation failed").apply {
-            font = font.deriveFont(Font.BOLD, font.size + 1f)
-            foreground = JBColor(Color(0xC62828), Color(0xEF5350))
-        })
+        val leftHeader = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
+            isOpaque = false
+            add(JBLabel(UIUtil.getErrorIcon()).apply {
+                border = JBUI.Borders.emptyRight(6)
+            })
+            add(JBLabel("Instantiation failed").apply {
+                font = font.deriveFont(Font.BOLD, font.size + 1f)
+                foreground = JBColor(Color(0xC62828), Color(0xEF5350))
+            })
+        }
+        headerRow.add(leftHeader, BorderLayout.WEST)
+        block.goToYamlOffset?.let { headerRow.add(createGoToButton(it), BorderLayout.EAST) }
         block.add(headerRow)
 
         block.add(Box.createVerticalStrut(JBUI.scale(6)))
@@ -860,7 +1122,7 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
         recordedActions += RenderAction.TopLevelError(errorMessage, errorTraceback)
         val block = PipelineBlock(BlockKind.ERROR).apply {
             layout = BoxLayout(this, BoxLayout.Y_AXIS)
-            border = JBUI.Borders.empty(12, 12, 12 + extraBottom, 12)
+            border = JBUI.Borders.empty(12, 12 + extraLeft, 12 + extraBottom, 12)
         }
 
         block.add(JBLabel(errorMessage).apply {
@@ -900,35 +1162,7 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
 
     private fun addConnector(label: String?) {
         recordedActions += RenderAction.Connector(label)
-        val connector = JPanel().apply {
-            layout = BoxLayout(this, BoxLayout.X_AXIS)
-            isOpaque = false
-            alignmentX = Component.LEFT_ALIGNMENT
-            maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(28))
-            border = JBUI.Borders.empty(2, 0)
-        }
-
-        connector.add(Box.createHorizontalStrut(JBUI.scale(24)))
-
-        // Vertical line + arrow — chrome decides the look.
-        connector.add(object : JComponent() {
-            override fun getPreferredSize() = Dimension(JBUI.scale(20), JBUI.scale(24))
-            override fun getMinimumSize() = preferredSize
-            override fun getMaximumSize() = preferredSize
-            override fun paintComponent(g: Graphics) {
-                chrome.paintConnector(g, width, height)
-            }
-        })
-
-        if (label != null) {
-            connector.add(Box.createHorizontalStrut(JBUI.scale(4)))
-            connector.add(JBLabel(label).apply {
-                foreground = UIUtil.getInactiveTextColor()
-                font = font.deriveFont(Font.ITALIC, font.size - 1f)
-            })
-        }
-
-        contentPanel.add(connector)
+        contentPanel.add(chrome.newConnector(label))
     }
 
     /** Adds a collapsible traceback toggle to a block panel. */
@@ -964,18 +1198,6 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
         block.add(tracePanel)
     }
 
-    private fun buildSummaryBadges(diffs: List<FieldDiff>): String {
-        val added = diffs.count { it.status == FieldDiffStatus.ADDED }
-        val removed = diffs.count { it.status == FieldDiffStatus.REMOVED }
-        val modified = diffs.count { it.status == FieldDiffStatus.MODIFIED }
-        val parts = mutableListOf<String>()
-        if (added > 0) parts.add("+$added")
-        if (removed > 0) parts.add("-$removed")
-        if (modified > 0) parts.add("~$modified")
-        val total = diffs.size
-        parts.add("$total fields")
-        return parts.joinToString("  ")
-    }
 
     override fun removeNotify() {
         super.removeNotify()
@@ -1141,6 +1363,7 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
         recordedActions.clear()
         contentPanel.revalidate()
         contentPanel.repaint()
+        contentCardLayout.show(contentCards, CARD_EMPTY)
 
         cleanupTensorDir()
 
@@ -1148,7 +1371,8 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
         rerunButton.isEnabled = false
         stopButton.isEnabled = false
         stopButton.isVisible = false
-        headerLabel.text = "No probe results yet."
+        statusChip.setIdle()
+        headerLabel.text = ""
         headerLabel.icon = null
         progressLabel.text = ""
         // The strip is a child of contentPanel; contentPanel.removeAll()
@@ -1245,6 +1469,10 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
     }
 
     companion object {
+        private const val CARD_EMPTY = "empty"
+        private const val CARD_CONTENT = "content"
+        private const val ORIGINAL_TEXT_KEY = "srforge.probe.originalText"
+
         fun computeDiffs(before: EntrySnapshot, after: EntrySnapshot): List<FieldDiff> {
             return computeFieldListDiffs(before.fields, after.fields)
         }
@@ -1329,22 +1557,25 @@ sealed class RenderAction {
         val node: DatasetNode?,
     ) : RenderAction()
 
-    data class Cache(val cacheDir: String) : RenderAction()
+    data class Cache(val cacheDir: String, val yamlOffset: Int?) : RenderAction()
 
     data class Step(
         val snapshot: EntrySnapshot,
         val diffs: List<FieldDiff>,
+        val yamlOffset: Int?,
     ) : RenderAction()
 
     data class ErrorStep(
         val snapshot: EntrySnapshot,
         val errorMessage: String,
         val errorTraceback: String?,
+        val yamlOffset: Int?,
     ) : RenderAction()
 
     data class InitError(
         val errorMessage: String,
         val errorTraceback: String?,
+        val yamlOffset: Int?,
     ) : RenderAction()
 
     data class TopLevelError(

@@ -2,19 +2,20 @@ package com.github.ttarasiewicz.srforgeassistant.probe
 
 import com.github.ttarasiewicz.srforgeassistant.SrForgeHighlightSettings
 import com.intellij.openapi.editor.Editor
-import com.intellij.openapi.editor.markup.CustomHighlighterRenderer
-import com.intellij.openapi.editor.markup.HighlighterLayer
-import com.intellij.openapi.editor.markup.HighlighterTargetArea
-import com.intellij.openapi.editor.markup.RangeHighlighter
 import com.intellij.ui.JBColor
+import com.intellij.util.ui.JBUI
 import java.awt.AlphaComposite
 import java.awt.BasicStroke
 import java.awt.Color
 import java.awt.Graphics
 import java.awt.Graphics2D
 import java.awt.RenderingHints
+import java.awt.event.ComponentAdapter
+import java.awt.event.ComponentEvent
+import java.awt.event.ComponentListener
 import java.awt.geom.Path2D
 import java.awt.geom.Point2D
+import javax.swing.JComponent
 import javax.swing.Timer
 
 /**
@@ -52,9 +53,22 @@ class YamlPathOverlay(private val editor: Editor) {
 
     private var edges: List<PathEdge> = emptyList()
     private var nodes: List<PathNode> = emptyList()
-    private var highlighter: RangeHighlighter? = null
     private var timer: Timer? = null
     private var traceStart: Long = 0L
+
+    // ── Overlay JComponent mount ─────────────────────────────────────────
+    //
+    // We render through a JComponent that's *added as a child of the editor's
+    // contentComponent*. That places our paint pass strictly *after* the
+    // editor's own paintComponent (the call order is paintComponent →
+    // paintBorder → paintChildren), so indent guides and any other intrinsic
+    // editor decorations cannot draw over us. The previous CustomHighlighter
+    // approach was vulnerable to IntelliJ's intrinsic indent-guide pass.
+
+    private val overlay: OverlayComponent = OverlayComponent()
+    private var componentListener: ComponentListener? = null
+    private var visibleAreaListener: com.intellij.openapi.editor.event.VisibleAreaListener? = null
+    private var mounted: Boolean = false
 
     /**
      * Show the tree defined by [edges] and [nodes]. Restart the animation.
@@ -68,45 +82,65 @@ class YamlPathOverlay(private val editor: Editor) {
         this.nodes = nodes
         traceStart = System.currentTimeMillis()
 
-        val offsets = edges.flatMap { listOf(it.from, it.to) } + nodes.map { it.offset }
-        val lo = offsets.min()
-        val hi = offsets.max()
-        val docLen = editor.document.textLength
-        val start = lo.coerceIn(0, docLen)
-        val end = (hi + 1).coerceIn(start, docLen)
-
-        highlighter = editor.markupModel.addRangeHighlighter(
-            start, end,
-            HighlighterLayer.LAST + 100,
-            null,
-            HighlighterTargetArea.EXACT_RANGE,
-        ).also {
-            it.customRenderer = PathRenderer()
-        }
-
-        timer = Timer(33) { editor.contentComponent.repaint() }
-        timer?.start()
+        mountOverlay()
+        timer = Timer(33) { overlay.repaint() }.also { it.start() }
     }
 
     fun clear() {
         timer?.stop()
         timer = null
-        highlighter?.let {
-            try {
-                editor.markupModel.removeHighlighter(it)
-            } catch (_: Throwable) {
-                // editor may have been disposed
-            }
-        }
-        highlighter = null
+        unmountOverlay()
         edges = emptyList()
         nodes = emptyList()
     }
 
-    // ── Renderer ───────────────────────────────────────────────────────────
+    private fun mountOverlay() {
+        if (mounted) return
+        mounted = true
+        val cc = editor.contentComponent
+        cc.add(overlay)
+        overlay.setBounds(0, 0, cc.width, cc.height)
+        componentListener = object : ComponentAdapter() {
+            override fun componentResized(e: ComponentEvent) {
+                overlay.setBounds(0, 0, cc.width, cc.height)
+            }
+        }
+        cc.addComponentListener(componentListener)
+        // Scroll within the viewport doesn't invalidate the overlay's content
+        // automatically (only the visible region moves) — request a repaint
+        // so anchors that rely on offsetToXY stay aligned with the text.
+        visibleAreaListener = com.intellij.openapi.editor.event.VisibleAreaListener {
+            overlay.repaint()
+        }.also { editor.scrollingModel.addVisibleAreaListener(it) }
+    }
 
-    private inner class PathRenderer : CustomHighlighterRenderer {
-        override fun paint(editor: Editor, highlighter: RangeHighlighter, g: Graphics) {
+    private fun unmountOverlay() {
+        if (!mounted) return
+        mounted = false
+        val cc = editor.contentComponent
+        componentListener?.let { cc.removeComponentListener(it) }
+        componentListener = null
+        visibleAreaListener?.let { editor.scrollingModel.removeVisibleAreaListener(it) }
+        visibleAreaListener = null
+        try {
+            cc.remove(overlay)
+            cc.repaint()
+        } catch (_: Throwable) {
+            // editor may have been disposed
+        }
+    }
+
+    // ── Overlay component ────────────────────────────────────────────────
+
+    private inner class OverlayComponent : JComponent() {
+        init {
+            isOpaque = false
+        }
+
+        /** Don't intercept mouse events — pass them through to the editor. */
+        override fun contains(x: Int, y: Int): Boolean = false
+
+        override fun paintComponent(g: Graphics) {
             if (edges.isEmpty() && nodes.isEmpty()) return
 
             val g2 = (g as Graphics2D).create() as Graphics2D
@@ -114,15 +148,21 @@ class YamlPathOverlay(private val editor: Editor) {
                 g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
                 g2.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE)
 
-                val traceMs = SrForgeHighlightSettings.getInstance().state
+                // Per-segment timing: each edge gets the same wall-clock
+                // duration regardless of how deep the tree goes, so the
+                // perceived animation speed stays uniform across long and
+                // short paths alike. The setting is the time *per segment*;
+                // total trace time scales with maxDepth.
+                val perSegmentMs = SrForgeHighlightSettings.getInstance().state
                     .pathTraceDurationMs
                     .coerceAtLeast(50)
                     .toLong()
                 val maxDepth = (nodes.maxOfOrNull { it.depth } ?: 0).coerceAtLeast(1)
+                val totalMs = perSegmentMs * maxDepth
 
                 val now = System.currentTimeMillis()
-                val overall = ((now - traceStart) / traceMs.toDouble()).coerceIn(0.0, 1.0)
-                val pulsePhase = ((now - traceStart - traceMs).coerceAtLeast(0L) /
+                val overall = ((now - traceStart) / totalMs.toDouble()).coerceIn(0.0, 1.0)
+                val pulsePhase = ((now - traceStart - totalMs).coerceAtLeast(0L) /
                     PULSE_PERIOD_MS.toDouble())
 
                 // Sequential animation: each edge animates within its own
@@ -156,20 +196,39 @@ class YamlPathOverlay(private val editor: Editor) {
         val a = anchor(edge.from)
         val b = anchor(edge.to)
 
+        // Route the curve through a rail to the LEFT of both anchors so the
+        // path leaves the parent going left, drops/rises along the rail, then
+        // approaches the child horizontally — never crossing the text in
+        // between. Each anchor is now entered/exited *horizontally*.
+        val railX = minOf(a.x, b.x) - RAIL_OFFSET
+        val p0 = a
+        val p1 = Point2D.Double(railX, a.y)
+        val p2 = Point2D.Double(railX, b.y)
+        val p3 = b
+
+        // De Casteljau subdivision: take the first [progress] fraction of the
+        // cubic Bezier so the curve grows along its own geometry rather than
+        // tracking a linearly-interpolated endpoint (which would zigzag).
+        val q0 = lerp(p0, p1, progress)
+        val q1 = lerp(p1, p2, progress)
+        val q2 = lerp(p2, p3, progress)
+        val r0 = lerp(q0, q1, progress)
+        val r1 = lerp(q1, q2, progress)
+        val tip = lerp(r0, r1, progress)
+
         val color = if (edge.isPrimary) PRIMARY_SPINE else ALT_SPINE
         val width = if (edge.isPrimary) 2.2f else 1.6f
         g.color = color
         g.stroke = BasicStroke(width, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
 
-        val tipX = a.x + (b.x - a.x) * progress
-        val tipY = a.y + (b.y - a.y) * progress
-        val midY = (a.y + tipY) / 2.0
-
         val path = Path2D.Double()
-        path.moveTo(a.x, a.y)
-        path.curveTo(a.x, midY, tipX, midY, tipX, tipY)
+        path.moveTo(p0.x, p0.y)
+        path.curveTo(q0.x, q0.y, r0.x, r0.y, tip.x, tip.y)
         g.draw(path)
     }
+
+    private fun lerp(a: Point2D.Double, b: Point2D.Double, t: Double): Point2D.Double =
+        Point2D.Double(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t)
 
     private fun drawMarker(
         g: Graphics2D,
@@ -186,16 +245,27 @@ class YamlPathOverlay(private val editor: Editor) {
         // Leaves only get their pulse once the whole trace has settled.
         val pulseReady = overall >= 1.0
 
+        // Paint a slightly-larger marker in the editor's background colour
+        // BEFORE the coloured fill — it "cuts out" any curve passing under
+        // the marker, so the dataset waypoint stays crisp even when the
+        // path approaches it. Theme-aware via colorsScheme.defaultBackground.
+        val bgCutout = editor.colorsScheme.defaultBackground
+        val cutoutPad = 2.0
+
         val p = anchor(node.offset)
         when {
             node.isLeaf && node.isPrimary -> {
                 val r = 5.5 * scale
+                g.color = bgCutout
+                fillCircle(g, p.x, p.y, r + cutoutPad)
                 g.color = PRIMARY_LEAF
                 fillCircle(g, p.x, p.y, r)
                 if (pulseReady) drawPulse(g, p, pulsePhase)
             }
             node.isLeaf && !node.isPrimary -> {
                 val r = 4.5 * scale
+                g.color = bgCutout
+                fillCircle(g, p.x, p.y, r + cutoutPad)
                 g.color = ALT_LEAF
                 fillCircle(g, p.x, p.y, r)
             }
@@ -203,6 +273,8 @@ class YamlPathOverlay(private val editor: Editor) {
                 // Ancestor — diamond.
                 val baseR = if (node.isPrimary) 3.6 else 3.0
                 val r = baseR * scale
+                g.color = bgCutout
+                fillDiamond(g, p.x, p.y, r + cutoutPad)
                 g.color = if (node.isPrimary) PRIMARY_NODE else ALT_NODE
                 fillDiamond(g, p.x, p.y, r)
             }
@@ -249,6 +321,14 @@ class YamlPathOverlay(private val editor: Editor) {
 
     companion object {
         private const val PULSE_PERIOD_MS = 1400L
+
+        /**
+         * How far left of the leftmost edge endpoint the routing rail sits.
+         * Bezier control points use this so the curve leaves the parent
+         * heading left and arrives at the child from the left, never
+         * crossing the text between them.
+         */
+        private val RAIL_OFFSET: Double get() = JBUI.scale(24).toDouble()
 
         // Primary path — bright gold.
         private val PRIMARY_SPINE = JBColor(Color(0xFF8C00), Color(0xFFAA33))

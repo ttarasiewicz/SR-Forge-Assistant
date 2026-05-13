@@ -8,55 +8,29 @@ import javax.swing.JPanel
 
 /**
  * The kinds of blocks the pipeline-probe visualization renders. Each kind
- * bundles its visual specification for every display mode that needs one:
- *  - [polishedStyle] — gradient + shadow + accent used by [PolishedProbeChrome].
- *  - [legacyBg] / [legacyBorder] — flat fill (and optional border) used by
- *    [LegacyProbeChrome].
+ * bundles its visual data for [LegacyProbeChrome] (the polished chrome paints
+ * the timeline thread + node marker and doesn't read from these values).
  *
- * Future display modes can add their own fields without touching the call
- * sites. Each call site just constructs `PipelineBlock(BlockKind.X)` and the
- * active [ProbeChrome] decides how to paint it.
+ * Future display modes can either reuse these legacy colours, ignore them, or
+ * add their own data to the enum — call sites stay the same: they construct
+ * `PipelineBlock(BlockKind.X)` and the active [ProbeChrome] decides how to paint.
  */
 enum class BlockKind(
-    val polishedStyle: PolishedStyle,
     val legacyBg: JBColor,
     val legacyBorder: JBColor? = null,
 ) {
     DATASET(
-        polishedStyle = PolishedStyle(
-            topColor = JBColor(Color(0x2196F3), Color(0x1976D2)),
-            bottomColor = JBColor(Color(0x1565C0), Color(0x1259AE)),
-            borderColor = JBColor(Color(0x0D47A1), Color(0x0A3C8C)),
-            leftAccent = JBColor(Color(0x64B5F6), Color(0x90CAF9)),
-        ),
         legacyBg = JBColor(Color(0x1976D2), Color(0x1565C0)),
     ),
     STEP(
-        polishedStyle = PolishedStyle(
-            topColor = JBColor(Color.WHITE, Color(0x42464A)),
-            bottomColor = JBColor(Color(0xF2F4F7), Color(0x3A3D40)),
-            borderColor = JBColor(Color(0xCFD3D8), Color(0x4E5256)),
-        ),
         legacyBg = JBColor(Color.WHITE, Color(0x3C3F41)),
         legacyBorder = JBColor(Color(0xD0D0D0), Color(0x555555)),
     ),
     CACHE(
-        polishedStyle = PolishedStyle(
-            topColor = JBColor(Color(0xE0F7F5), Color(0x1F4A45)),
-            bottomColor = JBColor(Color(0xC9EEEA), Color(0x1B3F3B)),
-            borderColor = JBColor(Color(0x80CBC4), Color(0x00897B)),
-            leftAccent = JBColor(Color(0x26A69A), Color(0x4DB6AC)),
-        ),
         legacyBg = JBColor(Color(0xE0F2F1), Color(0x1B3B36)),
         legacyBorder = JBColor(Color(0x80CBC4), Color(0x00897B)),
     ),
     ERROR(
-        polishedStyle = PolishedStyle(
-            topColor = JBColor(Color(0xFFEFF1), Color(0x4A2024)),
-            bottomColor = JBColor(Color(0xFFDDE0), Color(0x3D1B1F)),
-            borderColor = JBColor(Color(0xEF9A9A), Color(0xC62828)),
-            leftAccent = JBColor(Color(0xE53935), Color(0xEF5350)),
-        ),
         legacyBg = JBColor(Color(0xFFEBEE), Color(0x3B1B1B)),
         legacyBorder = JBColor(Color(0xEF9A9A), Color(0xC62828)),
     ),
@@ -86,7 +60,29 @@ open class PipelineBlock(val kind: BlockKind) : JPanel() {
     var animator: BlockAnimator? = null
         internal set
 
+    /**
+     * Optional per-block pulse animation (e.g. error halo loop or one-shot
+     * cache-hit flash). Set by chrome microinteractions; null otherwise.
+     */
+    var pulse: BlockPulse? = null
+        internal set
+
     val extraBottom: Int = chrome.blockExtraBottom(kind)
+    val extraLeft: Int = chrome.blockExtraLeft(kind)
+
+    /**
+     * Step index displayed inside the polished timeline's numbered node marker
+     * (e.g., "1", "2", ...). Set by callers that emit step/error blocks.
+     * Other kinds (dataset, cache, top-level error) leave it null.
+     */
+    var stepIndex: Int? = null
+
+    /**
+     * YAML source offset this block's "Go to" button should navigate to.
+     * Null when the block has no corresponding YAML location (e.g. a
+     * top-level error before any dataset/transform was parsed).
+     */
+    var goToYamlOffset: Int? = null
 
     init {
         isOpaque = false

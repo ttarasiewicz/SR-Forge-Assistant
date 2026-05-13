@@ -13,7 +13,7 @@ import com.intellij.openapi.editor.markup.HighlighterTargetArea
 import com.intellij.openapi.editor.markup.RangeHighlighter
 import com.intellij.openapi.util.TextRange
 import com.intellij.ui.JBColor
-import java.awt.AlphaComposite
+import com.intellij.util.ui.JBUI
 import java.awt.BasicStroke
 import java.awt.Color
 import java.awt.Cursor
@@ -61,6 +61,7 @@ class DatasetMarkerMode(
     val branchChoices: MutableMap<String, Int> = mutableMapOf()
 
     private var highlighter: RangeHighlighter? = null
+    private val stripeHighlighters: MutableList<RangeHighlighter> = mutableListOf()
     private var timer: Timer? = null
     private var mouseListener: EditorMouseListener? = null
     private var mouseMotionListener: EditorMouseMotionListener? = null
@@ -70,6 +71,7 @@ class DatasetMarkerMode(
     private var startTime: Long = 0L
     private var hoverIndex: Int = -1
     private var active: Boolean = false
+    private var headerCountLabel: com.intellij.ui.components.JBLabel? = null
 
     // The editor's existing header (if any) is saved here on activate and
     // restored on deactivate so we don't trample built-in headers like the
@@ -108,6 +110,23 @@ class DatasetMarkerMode(
             null,
             HighlighterTargetArea.EXACT_RANGE,
         ).also { it.customRenderer = MarkerRenderer() }
+
+        // Native IntelliJ scrollbar ticks so every dataset's location is
+        // discoverable even when nothing's currently in the viewport. Each
+        // tick is clickable: a click scrolls the editor to that position.
+        installScrollbarMarks()
+
+        // If the YAML was scrolled away from every dataset when the user
+        // activated the mode, jump to the first marker so they always see
+        // *something* immediately. (Skips the jump if any marker is already
+        // within the visible area — we don't want to disrupt their view.)
+        if (!anyMarkerVisible()) {
+            val first = markers[0]
+            editor.scrollingModel.scrollTo(
+                editor.offsetToLogicalPosition(first.valueRange.startOffset),
+                com.intellij.openapi.editor.ScrollType.CENTER,
+            )
+        }
 
         mouseMotionListener = object : EditorMouseMotionListener {
             override fun mouseMoved(e: EditorMouseEvent) {
@@ -178,6 +197,55 @@ class DatasetMarkerMode(
         timer = Timer(33) { editor.contentComponent.repaint() }.also { it.start() }
     }
 
+    /** Add one error-stripe (right-scrollbar) mark per dataset marker. */
+    private fun installScrollbarMarks() {
+        for (m in markers) {
+            val h = editor.markupModel.addRangeHighlighter(
+                m.valueRange.startOffset,
+                m.valueRange.endOffset,
+                HighlighterLayer.LAST + 91,
+                null,
+                HighlighterTargetArea.EXACT_RANGE,
+            )
+            h.setErrorStripeMarkColor(MARKER_COLOR)
+            h.errorStripeTooltip = "${m.node.displayName} — click to scroll to this dataset"
+            h.setThinErrorStripeMark(false)
+            stripeHighlighters.add(h)
+        }
+    }
+
+    /** True if any marker's value range is within the current viewport. */
+    private fun anyMarkerVisible(): Boolean {
+        val visible = editor.scrollingModel.visibleArea
+        return markers.any { m ->
+            val xy = editor.offsetToXY(m.valueRange.startOffset)
+            xy.y in visible.y until (visible.y + visible.height)
+        }
+    }
+
+    /**
+     * Scroll to the marker nearest to the current viewport centre in the
+     * given [direction] (`+1` = next below, `-1` = previous above). Wraps
+     * around the document when there is no marker further in that direction.
+     */
+    private fun jumpToAdjacentMarker(direction: Int) {
+        if (markers.isEmpty()) return
+        val visible = editor.scrollingModel.visibleArea
+        val centreY = visible.y + visible.height / 2
+        val sorted = markers.sortedBy { editor.offsetToXY(it.valueRange.startOffset).y }
+        val target: Marker = if (direction >= 0) {
+            sorted.firstOrNull { editor.offsetToXY(it.valueRange.startOffset).y > centreY }
+                ?: sorted.first()
+        } else {
+            sorted.lastOrNull { editor.offsetToXY(it.valueRange.startOffset).y < centreY }
+                ?: sorted.last()
+        }
+        editor.scrollingModel.scrollTo(
+            editor.offsetToLogicalPosition(target.valueRange.startOffset),
+            com.intellij.openapi.editor.ScrollType.CENTER,
+        )
+    }
+
     /**
      * Return `true` only if the wheel event's screen position lands on a
      * composite-marker with more than one branch — in that case we cycle the
@@ -239,6 +307,15 @@ class DatasetMarkerMode(
             }
         }
         highlighter = null
+        for (h in stripeHighlighters) {
+            try {
+                editor.markupModel.removeHighlighter(h)
+            } catch (_: Throwable) {
+                // editor may have been disposed
+            }
+        }
+        stripeHighlighters.clear()
+        headerCountLabel = null
         editor.headerComponent = savedHeader
         savedHeader = null
         editor.contentComponent.cursor = Cursor.getDefaultCursor()
@@ -294,23 +371,15 @@ class DatasetMarkerMode(
     }
 
     /**
-     * Hit-test against the *screen bounding box* of each marker's underlined
-     * value text, not the document offset under [pt]. Offset-based testing
-     * counts trailing-whitespace clicks past end-of-text as hits, which lets
-     * the user click anywhere on the `_target:` line — undesirable. We want
-     * exactly the value text to be clickable.
+     * Hit-test against the pill bounds (slightly larger than the bare value
+     * text). Matches the painted button shape, so clicking the visible bg
+     * counts. Rejects clicks on whitespace past end-of-text — we don't want
+     * the entire `_target:` line to be clickable.
      */
     private fun markerIndexAt(pt: Point): Int {
-        val lineHeight = editor.lineHeight
         for ((i, m) in markers.withIndex()) {
-            val start = editor.offsetToXY(m.valueRange.startOffset)
-            val end = editor.offsetToXY(m.valueRange.endOffset)
-            // Single-line values only — if the YAML wraps the target value
-            // onto two lines (rare), this rejects the click. Acceptable.
-            if (start.y != end.y) continue
-            if (pt.x in start.x..end.x && pt.y in start.y until (start.y + lineHeight)) {
-                return i
-            }
+            val r = pillBoundsFor(m) ?: continue
+            if (r.contains(pt)) return i
         }
         return -1
     }
@@ -323,9 +392,6 @@ class DatasetMarkerMode(
             val g2 = (g as Graphics2D).create() as Graphics2D
             try {
                 g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-
-                val now = System.currentTimeMillis()
-                val pulsePhase = ((now - startTime) % PULSE_PERIOD_MS) / PULSE_PERIOD_MS.toDouble()
                 val lineHeight = editor.lineHeight
 
                 drawDimOverlay(g2, editor, lineHeight)
@@ -335,11 +401,9 @@ class DatasetMarkerMode(
                     val endVp = editor.offsetToVisualPosition(m.valueRange.endOffset)
                     val startXY = editor.visualPositionToXY(startVp)
                     val endXY = editor.visualPositionToXY(endVp)
-                    val baselineY = startXY.y + lineHeight - 2
                     val isHovered = i == hoverIndex
 
-                    drawUnderline(g2, startXY.x, endXY.x, baselineY, isHovered)
-                    drawDot(g2, startXY.x, startXY.y + lineHeight / 2, isHovered, pulsePhase)
+                    drawClickablePill(g2, startXY.x, startXY.y, endXY.x - startXY.x, lineHeight, isHovered)
                 }
             } finally {
                 g2.dispose()
@@ -374,68 +438,59 @@ class DatasetMarkerMode(
         }
     }
 
-    private fun drawUnderline(
+    /**
+     * Paint a rounded, button-like background behind the value text. The
+     * filled tint + crisp border read as "interactive control" rather than
+     * a warning underline. Bounds match [pillBoundsFor] so hit-testing and
+     * paint stay aligned.
+     */
+    private fun drawClickablePill(
         g: Graphics2D,
-        x1: Int,
-        x2: Int,
-        y: Int,
+        textX: Int,
+        textY: Int,
+        textWidth: Int,
+        lineHeight: Int,
         isHovered: Boolean,
     ) {
-        g.color = if (isHovered) HOVER_COLOR else MARKER_COLOR
-        if (isHovered) {
-            g.stroke = BasicStroke(2f)
-        } else {
-            // Dotted gold underline — short dashes, gentle.
-            g.stroke = BasicStroke(
-                1.3f,
-                BasicStroke.CAP_BUTT,
-                BasicStroke.JOIN_MITER,
-                4f,
-                floatArrayOf(2.5f, 3f),
-                0f,
-            )
-        }
-        g.drawLine(x1, y, x2, y)
+        val padX = JBUI.scale(6)
+        val padY = JBUI.scale(2)
+        val x = textX - padX
+        val y = textY + padY
+        val w = textWidth + padX * 2
+        val h = lineHeight - padY * 2
+        val radius = (h - 1).coerceAtLeast(8)
+
+        val fillColor = if (isHovered) HOVER_COLOR else MARKER_COLOR
+        val fillAlpha = if (isHovered) 70 else 32
+        g.color = Color(fillColor.red, fillColor.green, fillColor.blue, fillAlpha)
+        g.fillRoundRect(x, y, w, h, radius, radius)
+
+        val borderColor = if (isHovered) HOVER_COLOR else MARKER_COLOR
+        g.color = borderColor
+        g.stroke = BasicStroke(if (isHovered) 1.6f else 1.1f)
+        g.drawRoundRect(x, y, w - 1, h - 1, radius, radius)
     }
 
-    private fun drawDot(
-        g: Graphics2D,
-        valueStartX: Int,
-        centerY: Int,
-        isHovered: Boolean,
-        pulsePhase: Double,
-    ) {
-        // Center the dot just to the left of the value text.
-        val dotR = if (isHovered) 4.0 else 3.0
-        val cx = (valueStartX - 8).toDouble()
-
-        if (isHovered) {
-            // Solid bright dot when hovered (no pulse).
-            g.color = HOVER_COLOR
-            fillCircle(g, cx, centerY.toDouble(), dotR)
-            return
-        }
-
-        // Pulsing dot otherwise: core + breathing halo.
-        val haloT = pulsePhase
-        val haloAlpha = ((1.0 - haloT) * 0.45).coerceIn(0.0, 1.0).toFloat()
-        val haloR = dotR + haloT * 5.0
-
-        g.composite = AlphaComposite.getInstance(AlphaComposite.SRC_OVER, haloAlpha)
-        g.color = MARKER_COLOR
-        g.stroke = BasicStroke(1.3f)
-        val haloD = (haloR * 2.0).toInt()
-        g.drawOval((cx - haloR).toInt(), (centerY - haloR).toInt(), haloD, haloD)
-
-        g.composite = AlphaComposite.SrcOver
-        g.color = MARKER_COLOR
-        fillCircle(g, cx, centerY.toDouble(), dotR)
+    /** Pill bounds in editor content-component coordinates. */
+    private fun pillBoundsFor(m: Marker): java.awt.Rectangle? {
+        val startXY = editor.offsetToXY(m.valueRange.startOffset)
+        val endXY = editor.offsetToXY(m.valueRange.endOffset)
+        if (startXY.y != endXY.y) return null
+        val padX = JBUI.scale(6)
+        val padY = JBUI.scale(2)
+        return java.awt.Rectangle(
+            startXY.x - padX,
+            startXY.y + padY,
+            (endXY.x - startXY.x) + padX * 2,
+            editor.lineHeight - padY * 2,
+        )
     }
 
     /**
      * Build the styled "Pick a dataset" strip placed at the top of the editor
-     * while the mode is active. Theme-aware foreground and a warm gold tint
-     * that ties visually to the path overlay.
+     * while the mode is active. Shows the dataset count + Prev / Next jump
+     * controls on the right so the user can navigate without scrolling
+     * manually, even when the YAML is parked away from every marker.
      */
     private fun buildInstructionPanel(): javax.swing.JComponent {
         val bg = JBColor(Color(0xFFF4DD), Color(0x3C2F18))
@@ -443,12 +498,34 @@ class DatasetMarkerMode(
         val fg = JBColor(Color(0x3E2A0A), Color(0xEFD9B0))
         val accent = JBColor(Color(0xC15B05), Color(0xFFB570))
 
-        val html = "<html><span style='color:rgb(${accent.red},${accent.green},${accent.blue})'>" +
-            "<b>● Pick a dataset to probe</b></span>" +
-            "&nbsp;&nbsp;&nbsp;<b>Click</b> a marker to run from there" +
-            "&nbsp;&nbsp;·&nbsp;&nbsp;<b>Scroll</b> over a composite to switch branch" +
-            "&nbsp;&nbsp;·&nbsp;&nbsp;<b>Esc</b> to cancel" +
-            "</html>"
+        val title = com.intellij.ui.components.JBLabel(
+            "<html><span style='color:rgb(${accent.red},${accent.green},${accent.blue})'>" +
+                "<b>● Pick a dataset to probe</b></span>" +
+                "&nbsp;&nbsp;&nbsp;<b>Click</b> a marker to run" +
+                "&nbsp;&nbsp;·&nbsp;&nbsp;<b>Scroll</b> over composite to switch branch" +
+                "&nbsp;&nbsp;·&nbsp;&nbsp;<b>Esc</b> to cancel" +
+                "</html>"
+        ).apply { foreground = fg }
+
+        val count = com.intellij.ui.components.JBLabel(countText()).apply {
+            foreground = fg
+            border = com.intellij.util.ui.JBUI.Borders.emptyRight(10)
+        }
+        headerCountLabel = count
+
+        val prev = makeNavLink("◀ Prev", "Scroll to previous dataset (Shift+Tab)", fg) {
+            jumpToAdjacentMarker(-1)
+        }
+        val next = makeNavLink("Next ▶", "Scroll to next dataset (Tab)", fg) {
+            jumpToAdjacentMarker(1)
+        }
+
+        val right = javax.swing.JPanel(java.awt.FlowLayout(java.awt.FlowLayout.RIGHT, com.intellij.util.ui.JBUI.scale(8), 0)).apply {
+            isOpaque = false
+            add(count)
+            add(prev)
+            add(next)
+        }
 
         return javax.swing.JPanel(java.awt.BorderLayout()).apply {
             background = bg
@@ -456,23 +533,40 @@ class DatasetMarkerMode(
                 javax.swing.BorderFactory.createMatteBorder(0, 0, 1, 0, borderColor),
                 com.intellij.util.ui.JBUI.Borders.empty(6, 14),
             )
-            add(
-                com.intellij.ui.components.JBLabel(html).apply {
-                    foreground = fg
-                },
-                java.awt.BorderLayout.WEST,
-            )
+            add(title, java.awt.BorderLayout.WEST)
+            add(right, java.awt.BorderLayout.EAST)
         }
     }
 
-    private fun fillCircle(g: Graphics2D, cx: Double, cy: Double, r: Double) {
-        val d = (r * 2.0).toInt()
-        g.fillOval((cx - r).toInt(), (cy - r).toInt(), d, d)
+    private fun countText(): String = when (markers.size) {
+        0 -> "no datasets"
+        1 -> "1 dataset"
+        else -> "${markers.size} datasets"
+    }
+
+    /** Small clickable label that behaves like a link in the instruction strip. */
+    private fun makeNavLink(
+        text: String,
+        tooltip: String,
+        fg: java.awt.Color,
+        onClick: () -> Unit,
+    ): com.intellij.ui.components.JBLabel {
+        return com.intellij.ui.components.JBLabel(text).apply {
+            foreground = fg
+            toolTipText = tooltip
+            font = font.deriveFont(java.awt.Font.BOLD)
+            cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+            border = com.intellij.util.ui.JBUI.Borders.empty(2, 6)
+            addMouseListener(object : java.awt.event.MouseAdapter() {
+                override fun mouseClicked(e: java.awt.event.MouseEvent) {
+                    if (markers.size > 1) onClick()
+                }
+            })
+            isEnabled = markers.size > 1
+        }
     }
 
     companion object {
-        private const val PULSE_PERIOD_MS = 1600L
-
         // Matches the path-trace gold so the visuals feel related.
         private val MARKER_COLOR = JBColor(Color(0xE67E22), Color(0xFFB570))
         private val HOVER_COLOR = JBColor(Color(0xD35400), Color(0xFFC880))

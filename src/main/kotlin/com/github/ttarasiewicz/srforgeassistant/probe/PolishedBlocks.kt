@@ -6,216 +6,214 @@ import java.awt.AlphaComposite
 import java.awt.BasicStroke
 import java.awt.Color
 import java.awt.Dimension
-import java.awt.GradientPaint
 import java.awt.Graphics
 import java.awt.Graphics2D
 import java.awt.LinearGradientPaint
-import java.awt.Polygon
 import java.awt.RenderingHints
-import java.awt.event.MouseAdapter
-import java.awt.event.MouseEvent
 import java.awt.geom.RoundRectangle2D
 import javax.swing.JComponent
 import javax.swing.Timer
 
 /**
- * Visual style for a polished pipeline block — used by the rendering helpers
- * below so each block type can describe its colours without duplicating the
- * shadow / gradient / border drawing code.
+ * Per-block fade-in animator. Each block instance owns one. The timer ticks
+ * at ~60 fps for ~220 ms and then self-stops, so the steady-state CPU cost
+ * is zero. No hover state — the timeline design has no hover-lift effect.
  */
-data class PolishedStyle(
-    val topColor: Color,
-    val bottomColor: Color = topColor,
-    val borderColor: Color? = null,
-    val leftAccent: Color? = null,
-    val cornerRadius: Int = JBUI.scale(12),
-    val baseShadowOffset: Int = JBUI.scale(4),
-    val maxShadowOffset: Int = JBUI.scale(7),
-)
-
-/**
- * Per-block animator handling two things:
- *
- *  1. **Fade-in** (alpha 0 → 1 with ease-out over ~220 ms). Runs once when
- *     the block is first painted, then the timer self-stops.
- *  2. **Hover lift** — animates [shadowOffset] from base → max (and back)
- *     when the cursor enters / leaves the block, over ~120 ms. The block
- *     keeps the hovered state if the cursor moves onto a child component.
- *
- * Each block instance owns one of these. The repaint cost is bounded — at
- * 60 fps for ~220 ms the fade timer fires ~13 times total, and hover
- * animations are one-shot too.
- */
-class BlockAnimator(private val component: JComponent, private val style: PolishedStyle) {
+class BlockAnimator(private val component: JComponent) {
 
     /** Current fade-in alpha (0..1). Apply to `Graphics2D` via AlphaComposite. */
     var fadeAlpha: Float = 0f
         private set
 
-    /** Current drop-shadow vertical offset in pixels. Reads animate on hover. */
-    var shadowOffset: Int = style.baseShadowOffset
-        private set
-
     private val fadeStart = System.currentTimeMillis()
-    private val fadeTimer: Timer
-    private val hoverTimer: Timer
-    private var hoverAnimStart = 0L
-    private var hoverFrom = style.baseShadowOffset
-    private var hoverTo = style.baseShadowOffset
-
-    private val hoverMouseListener = object : MouseAdapter() {
-        override fun mouseEntered(e: MouseEvent) = startHoverAnim(style.maxShadowOffset)
-        override fun mouseExited(e: MouseEvent) {
-            // Don't un-hover if the cursor moved onto a child component;
-            // getMousePosition(true) is non-null when the cursor is over
-            // the component OR any of its descendants.
-            if (component.getMousePosition(true) == null) {
-                startHoverAnim(style.baseShadowOffset)
-            }
-        }
+    private val fadeTimer: Timer = Timer(16) {
+        val t = ((System.currentTimeMillis() - fadeStart) / FADE_DURATION_MS.toDouble())
+            .coerceIn(0.0, 1.0)
+        val x = 1.0 - t
+        fadeAlpha = (1.0 - x * x * x).toFloat()
+        component.repaint()
+        if (t >= 1.0) (it.source as Timer).stop()
     }
 
     init {
-        fadeTimer = Timer(16) {
-            val t = ((System.currentTimeMillis() - fadeStart) / FADE_DURATION_MS.toDouble())
-                .coerceIn(0.0, 1.0)
-            fadeAlpha = easeOut(t).toFloat()
-            component.repaint()
-            if (t >= 1.0) (it.source as Timer).stop()
-        }.also { it.start() }
-
-        hoverTimer = Timer(16) { tickHover() }
-
-        component.addMouseListener(hoverMouseListener)
+        fadeTimer.start()
     }
 
-    /** Stop all timers and detach listeners. Safe to call more than once. */
+    /** Stop the timer. Safe to call more than once. */
     fun dispose() {
         fadeTimer.stop()
-        hoverTimer.stop()
-        component.removeMouseListener(hoverMouseListener)
     }
-
-    private fun startHoverAnim(target: Int) {
-        if (hoverTo == target && !hoverTimer.isRunning) return
-        hoverFrom = shadowOffset
-        hoverTo = target
-        hoverAnimStart = System.currentTimeMillis()
-        if (!hoverTimer.isRunning) hoverTimer.start()
-    }
-
-    private fun tickHover() {
-        val t = ((System.currentTimeMillis() - hoverAnimStart) / HOVER_DURATION_MS.toDouble())
-            .coerceIn(0.0, 1.0)
-        val eased = easeOut(t)
-        shadowOffset = (hoverFrom + (hoverTo - hoverFrom) * eased).toInt()
-        component.repaint()
-        if (t >= 1.0) {
-            shadowOffset = hoverTo
-            (hoverTimer).stop()
-        }
-    }
-
-    private fun easeOut(t: Double): Double {
-        val x = 1.0 - t
-        return 1.0 - x * x * x
-    }
-
-    /** How much extra vertical padding the block needs to host the shadow. */
-    val verticalPadding: Int
-        get() = style.maxShadowOffset + JBUI.scale(2)
 
     companion object {
         private const val FADE_DURATION_MS = 220L
-        private const val HOVER_DURATION_MS = 120L
+    }
+}
+
+// ── Timeline helpers (used by the polished/modern chrome) ──────────────────
+
+/** Width reserved on the block's left for the timeline gutter (thread + node). */
+val TIMELINE_GUTTER: Int get() = JBUI.scale(30)
+
+/** Horizontal center of the timeline thread within the block's local coords. */
+val TIMELINE_THREAD_X: Int get() = JBUI.scale(15)
+
+/** Theme-aware neutral colour of the timeline thread. */
+val TIMELINE_THREAD_COLOR: JBColor get() = JBColor(Color(0xCBD5E1), Color(0x3F3F46))
+
+/**
+ * Paint the vertical thread segment that runs through the block (or
+ * connector) for its full height. Call from `paintComponent` after fade
+ * alpha has been applied.
+ */
+fun paintTimelineThread(g: Graphics, top: Int, bottom: Int) {
+    val g2 = (g as Graphics2D).create() as Graphics2D
+    try {
+        g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+        g2.color = TIMELINE_THREAD_COLOR
+        g2.stroke = BasicStroke(JBUI.scale(2).toFloat(), BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
+        g2.drawLine(TIMELINE_THREAD_X, top, TIMELINE_THREAD_X, bottom)
+    } finally {
+        g2.dispose()
     }
 }
 
 /**
- * Paint a polished card background — soft 4-layer drop shadow, rounded
- * gradient fill, optional left accent stripe, optional border. Call from
- * the host component's `paintComponent` BEFORE adding children's content;
- * children render on top via the usual Swing paint chain.
+ * Paint a node marker at the timeline thread for a block of the given kind.
  *
- * Coordinates are local to the component (0..width, 0..height).
+ *  - DATASET: filled indigo circle, larger diameter.
+ *  - STEP: filled zinc circle with the step number rendered inside.
+ *  - CACHE: hollow teal ring (optional one-shot flash via pulseAlpha).
+ *  - ERROR: filled red circle with a halo that pulses if pulseAlpha > 0.
+ *
+ * [pulseAlpha] is a 0..1 microinteraction value: 0 = quiescent, 1 = at
+ * peak intensity. Used for the error halo loop and cache-hit flash.
  */
-fun paintPolishedCard(
-    g: Graphics,
-    width: Int,
-    height: Int,
-    style: PolishedStyle,
-    shadowOffset: Int = style.baseShadowOffset,
-) {
+fun paintTimelineNode(g: Graphics, cy: Int, kind: BlockKind, stepIndex: Int?, pulseAlpha: Float = 0f) {
     val g2 = (g as Graphics2D).create() as Graphics2D
     try {
         g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+        val cx = TIMELINE_THREAD_X
 
-        val cardHeight = height - shadowOffset
-        if (cardHeight <= 0) return
+        when (kind) {
+            BlockKind.DATASET -> {
+                val r = JBUI.scale(7)
+                g2.color = TIMELINE_NODE_DATASET
+                g2.fillOval(cx - r, cy - r, r * 2, r * 2)
+                // Inner highlight ring for depth without a hard shadow.
+                g2.color = Color(255, 255, 255, 60)
+                g2.stroke = BasicStroke(1f)
+                g2.drawOval(cx - r + 2, cy - r + 2, (r - 2) * 2, (r - 2) * 2)
+            }
 
-        // ── Soft drop shadow: stack 4 translucent rounded rects each one
-        //    pixel inset and one pixel further down. Approximates a small
-        //    Gaussian blur at a tiny fraction of the cost.
-        for (i in 0 until SHADOW_LAYERS) {
-            g2.color = Color(0, 0, 0, shadowAlphaForLayer(i, shadowOffset))
-            g2.fillRoundRect(
-                i,
-                shadowOffset - SHADOW_LAYERS + 1 + i,
-                width - 2 * i,
-                cardHeight + (SHADOW_LAYERS - 1 - i) * 2,
-                style.cornerRadius,
-                style.cornerRadius,
-            )
-        }
+            BlockKind.STEP -> {
+                val r = JBUI.scale(8)
+                g2.color = TIMELINE_NODE_STEP
+                g2.fillOval(cx - r, cy - r, r * 2, r * 2)
+                if (stepIndex != null) {
+                    val label = stepIndex.toString()
+                    val font = JBUI.Fonts.smallFont().deriveFont(java.awt.Font.BOLD, JBUI.scale(9).toFloat())
+                    g2.font = font
+                    g2.color = JBColor(Color.WHITE, Color(0x18181B))
+                    val fm = g2.fontMetrics
+                    val tw = fm.stringWidth(label)
+                    val th = fm.ascent
+                    g2.drawString(label, cx - tw / 2, cy + th / 2 - JBUI.scale(1))
+                }
+            }
 
-        // ── Card fill with vertical gradient.
-        if (style.topColor == style.bottomColor) {
-            g2.color = style.topColor
-        } else {
-            g2.paint = GradientPaint(
-                0f, 0f, style.topColor,
-                0f, cardHeight.toFloat(), style.bottomColor,
-            )
-        }
-        g2.fillRoundRect(0, 0, width, cardHeight, style.cornerRadius, style.cornerRadius)
+            BlockKind.CACHE -> {
+                // Optional one-shot teal flash on appearance (pulseAlpha 1→0).
+                if (pulseAlpha > 0f) {
+                    val haloR = JBUI.scale(12)
+                    val flashAlpha = (pulseAlpha * 110).toInt().coerceIn(0, 255)
+                    g2.color = Color(TIMELINE_NODE_CACHE.red, TIMELINE_NODE_CACHE.green, TIMELINE_NODE_CACHE.blue, flashAlpha)
+                    g2.fillOval(cx - haloR, cy - haloR, haloR * 2, haloR * 2)
+                }
+                val r = JBUI.scale(6)
+                g2.color = TIMELINE_NODE_CACHE
+                g2.stroke = BasicStroke(JBUI.scale(2).toFloat())
+                g2.drawOval(cx - r, cy - r, r * 2, r * 2)
+            }
 
-        // ── Optional left accent stripe — clipped to the card shape so its
-        //    corners follow the rounded rect.
-        if (style.leftAccent != null) {
-            val priorClip = g2.clip
-            g2.clip = RoundRectangle2D.Float(
-                0f, 0f,
-                width.toFloat(), cardHeight.toFloat(),
-                style.cornerRadius.toFloat(), style.cornerRadius.toFloat(),
-            )
-            g2.color = style.leftAccent
-            g2.fillRect(0, 0, JBUI.scale(4), cardHeight)
-            g2.clip = priorClip
-        }
-
-        // ── Border (single hairline at 25% alpha by convention).
-        if (style.borderColor != null) {
-            g2.color = style.borderColor
-            g2.stroke = BasicStroke(1f)
-            g2.drawRoundRect(
-                0, 0, width - 1, cardHeight - 1,
-                style.cornerRadius, style.cornerRadius,
-            )
+            BlockKind.ERROR -> {
+                // Pulsing halo: base intensity 40/255, +up to +90/255 at peak.
+                val haloBase = 40
+                val haloAdd = (pulseAlpha * 90).toInt()
+                val haloAlpha = (haloBase + haloAdd).coerceIn(0, 255)
+                val haloR = JBUI.scale(10) + (pulseAlpha * JBUI.scale(3)).toInt()
+                g2.color = Color(TIMELINE_NODE_ERROR.red, TIMELINE_NODE_ERROR.green, TIMELINE_NODE_ERROR.blue, haloAlpha)
+                g2.fillOval(cx - haloR, cy - haloR, haloR * 2, haloR * 2)
+                val r = JBUI.scale(6)
+                g2.color = TIMELINE_NODE_ERROR
+                g2.fillOval(cx - r, cy - r, r * 2, r * 2)
+            }
         }
     } finally {
         g2.dispose()
     }
 }
 
-/** Higher shadow layers get lighter alpha; offsets tweak based on lift. */
-private fun shadowAlphaForLayer(layer: Int, offset: Int): Int {
-    val base = intArrayOf(22, 14, 8, 5)[layer]
-    // Slight boost when hovered (offset > base) so the lift feels real.
-    val lift = (offset - 4).coerceAtLeast(0)
-    return (base + lift).coerceAtMost(60)
+/**
+ * Per-block microinteraction pulse. Drives a 0..1 intensity that the chrome
+ * reads in [paintTimelineNode]. Two modes:
+ *
+ *  - **One-shot** (`loop = false`): starts at 1.0 and decays to 0 over
+ *    [durationMs], then stops. Used for cache-hit flash.
+ *  - **Loop** (`loop = true`): smooth sin pulse on a [durationMs] cycle.
+ *    Used for the persistent error halo.
+ */
+class BlockPulse(
+    private val component: JComponent,
+    private val loop: Boolean,
+    private val durationMs: Long,
+) {
+    var intensity: Float = if (loop) 0f else 1f
+        private set
+
+    private val start = System.currentTimeMillis()
+    private val timer: Timer = Timer(16) { tick() }
+
+    init {
+        timer.start()
+    }
+
+    private fun tick() {
+        val elapsed = System.currentTimeMillis() - start
+        if (loop) {
+            val phase = (elapsed % durationMs).toDouble() / durationMs
+            intensity = (0.5 + 0.5 * kotlin.math.sin(phase * 2 * Math.PI - Math.PI / 2)).toFloat()
+        } else {
+            val t = (elapsed.toDouble() / durationMs).coerceIn(0.0, 1.0)
+            val x = 1.0 - t
+            intensity = (x * x * x).toFloat()
+            if (t >= 1.0) {
+                intensity = 0f
+                timer.stop()
+            }
+        }
+        component.repaint()
+    }
+
+    fun dispose() {
+        timer.stop()
+    }
 }
 
-private const val SHADOW_LAYERS = 4
+/** Approximate vertical centre of a block's primary header line. */
+fun timelineNodeCenterY(block: PipelineBlock): Int = when (block.kind) {
+    BlockKind.DATASET, BlockKind.CACHE -> block.height / 2
+    BlockKind.STEP, BlockKind.ERROR -> JBUI.scale(24)
+}
+
+private val TIMELINE_NODE_DATASET = JBColor(Color(0x6366F1), Color(0x818CF8))
+private val TIMELINE_NODE_STEP = JBColor(Color(0x52525B), Color(0xA1A1AA))
+private val TIMELINE_NODE_CACHE = JBColor(Color(0x14B8A6), Color(0x5EEAD4))
+private val TIMELINE_NODE_ERROR = JBColor(Color(0xEF4444), Color(0xF87171))
+
+/** Status dot palette for field rows (added/modified/removed). */
+val FIELD_DOT_ADDED: JBColor get() = JBColor(Color(0x10B981), Color(0x34D399))
+val FIELD_DOT_MODIFIED: JBColor get() = JBColor(Color(0xF59E0B), Color(0xFBBF24))
+val FIELD_DOT_REMOVED: JBColor get() = JBColor(Color(0xEF4444), Color(0xF87171))
 
 /**
  * Apply [animator]'s fade-in alpha to the rendering of [component] and its
@@ -232,37 +230,6 @@ inline fun applyFade(g: Graphics, animator: BlockAnimator, paint: (Graphics) -> 
     try {
         g2.composite = AlphaComposite.getInstance(AlphaComposite.SRC_OVER, animator.fadeAlpha)
         paint(g2)
-    } finally {
-        g2.dispose()
-    }
-}
-
-/**
- * Paint a polished connector between two stacked blocks: a vertical line
- * with a small downward arrowhead at the bottom, gradient-coloured.
- *
- * Centres horizontally inside [width]; spans [height] vertically.
- */
-/**
- * Paint the polished tool-window header background: a gentle vertical
- * gradient plus a 1 px hairline divider at the bottom for separation from
- * the scrollable content below. Coordinates are local (0..width, 0..height).
- *
- * Designed to be called from a custom `paintComponent` on the header
- * container. In legacy mode the caller should skip calling this entirely
- * and rely on the parent JPanel's default opaque fill.
- */
-fun paintPolishedHeaderBackground(g: Graphics, width: Int, height: Int) {
-    val g2 = (g as Graphics2D).create() as Graphics2D
-    try {
-        g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-        val top = JBColor(Color(0xF7F8FA), Color(0x3C3F41))
-        val bottom = JBColor(Color(0xECEFF3), Color(0x35383A))
-        g2.paint = GradientPaint(0f, 0f, top, 0f, height.toFloat(), bottom)
-        g2.fillRect(0, 0, width, height)
-
-        g2.color = JBColor(Color(0xD8DCE0), Color(0x2B2D2F))
-        g2.fillRect(0, height - 1, width, 1)
     } finally {
         g2.dispose()
     }
@@ -353,37 +320,3 @@ class PolishedProgressBar : JComponent() {
     }
 }
 
-fun paintPolishedConnector(
-    g: Graphics,
-    width: Int,
-    height: Int,
-    topColor: Color,
-    bottomColor: Color,
-) {
-    val g2 = (g as Graphics2D).create() as Graphics2D
-    try {
-        g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-        val cx = width / 2
-        val arrowHeight = JBUI.scale(6)
-        val arrowHalfWidth = JBUI.scale(4)
-        val lineEnd = height - arrowHeight
-
-        g2.paint = GradientPaint(
-            cx.toFloat(), 0f, topColor,
-            cx.toFloat(), lineEnd.toFloat(), bottomColor,
-        )
-        g2.stroke = BasicStroke(JBUI.scale(2).toFloat(), BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
-        g2.drawLine(cx, 0, cx, lineEnd)
-
-        // Arrowhead — filled triangle pointing down, in the bottom colour.
-        g2.color = bottomColor
-        val arrow = Polygon(
-            intArrayOf(cx - arrowHalfWidth, cx + arrowHalfWidth, cx),
-            intArrayOf(lineEnd, lineEnd, lineEnd + arrowHeight),
-            3,
-        )
-        g2.fillPolygon(arrow)
-    } finally {
-        g2.dispose()
-    }
-}

@@ -29,10 +29,59 @@ class FieldDetailPanel(private val diffs: List<FieldDiff>, private val project: 
         layout = BoxLayout(this, BoxLayout.Y_AXIS)
         isOpaque = false
 
-        for (diff in diffs) {
+        val (visibleDiffs, hiddenCount) = partitionDiffs(diffs)
+        for (diff in visibleDiffs) {
             add(createFieldBlock(diff))
             add(Box.createVerticalStrut(JBUI.scale(3)))
         }
+        if (hiddenCount > 0) {
+            add(createShowUnchangedToggle(hiddenCount))
+        }
+    }
+
+    /**
+     * Split [diffs] into the rows the chrome wants visible and a count of
+     * what's stashed away. Polished chrome hides UNCHANGED rows behind a
+     * "show all" toggle to keep the view focused on actual changes.
+     */
+    private fun partitionDiffs(diffs: List<FieldDiff>): Pair<List<FieldDiff>, Int> {
+        if (!chrome.hideUnchangedFieldsByDefault) return diffs to 0
+        val visible = diffs.filter { it.status != FieldDiffStatus.UNCHANGED }
+        val hiddenCount = diffs.size - visible.size
+        // If everything is unchanged, fall back to showing them — an empty
+        // step view (with only a "show 3 unchanged" toggle) feels broken.
+        if (visible.isEmpty()) return diffs to 0
+        return visible to hiddenCount
+    }
+
+    /**
+     * Returns a small clickable label that, when clicked, expands all hidden
+     * UNCHANGED rows in place above itself. After expansion the toggle hides.
+     */
+    private fun createShowUnchangedToggle(hiddenCount: Int): JComponent {
+        val label = JBLabel("Show $hiddenCount unchanged").apply {
+            foreground = UIUtil.getInactiveTextColor()
+            font = font.deriveFont(Font.ITALIC, font.size - 1f)
+            border = JBUI.Borders.empty(4, 14, 4, 8)
+            cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+            alignmentX = Component.LEFT_ALIGNMENT
+        }
+        label.addMouseListener(object : MouseAdapter() {
+            override fun mouseClicked(e: MouseEvent) {
+                val toggleIndex = (0 until componentCount).firstOrNull { getComponent(it) === label } ?: return
+                // Insert hidden UNCHANGED diffs just before the toggle.
+                val unchanged = diffs.filter { it.status == FieldDiffStatus.UNCHANGED }
+                var insertAt = toggleIndex
+                for (d in unchanged) {
+                    add(createFieldBlock(d), insertAt++)
+                    add(Box.createVerticalStrut(JBUI.scale(3)), insertAt++)
+                }
+                remove(label)
+                revalidate()
+                repaint()
+            }
+        })
+        return label
     }
 
     private fun createFieldBlock(diff: FieldDiff): JPanel {
@@ -164,16 +213,25 @@ class FieldDetailPanel(private val diffs: List<FieldDiff>, private val project: 
 
         when (diff.status) {
             FieldDiffStatus.MODIFIED -> {
-                if (diff.after != null) {
-                    panel.add(createCollapsibleSection(
-                        "After:", diff.after, diff.childDiffs, DiffSide.AFTER, bgColor, startExpanded = true
-                    ))
-                }
-                if (diff.before != null) {
-                    panel.add(Box.createVerticalStrut(JBUI.scale(2)))
-                    panel.add(createCollapsibleSection(
-                        "Before:", diff.before, diff.childDiffs, DiffSide.BEFORE, bgColor, startExpanded = false
-                    ))
+                if (chrome.inlineScalarDiff
+                    && diff.before != null && diff.after != null
+                    && diff.childDiffs.isNullOrEmpty()
+                ) {
+                    // Inline "before → after" rows — one per changed stat —
+                    // instead of an After:/Before: accordion.
+                    addInlineChanges(panel, diff.before, diff.after)
+                } else {
+                    if (diff.after != null) {
+                        panel.add(createCollapsibleSection(
+                            "After:", diff.after, diff.childDiffs, DiffSide.AFTER, bgColor, startExpanded = true
+                        ))
+                    }
+                    if (diff.before != null) {
+                        panel.add(Box.createVerticalStrut(JBUI.scale(2)))
+                        panel.add(createCollapsibleSection(
+                            "Before:", diff.before, diff.childDiffs, DiffSide.BEFORE, bgColor, startExpanded = false
+                        ))
+                    }
                 }
             }
             FieldDiffStatus.REMOVED -> {
@@ -197,6 +255,154 @@ class FieldDetailPanel(private val diffs: List<FieldDiff>, private val project: 
         }
 
         return panel
+    }
+
+    /**
+     * Render a compact list of `stat: before → after` rows for the changed
+     * fields of a MODIFIED diff. Shape changes get highlighted dimension-by-
+     * dimension so the eye lands on the actual size differences.
+     */
+    private fun addInlineChanges(parent: JPanel, before: FieldSnapshot, after: FieldSnapshot) {
+        val monoFont = Font(Font.MONOSPACED, Font.PLAIN, UIUtil.getFontSize(UIUtil.FontSize.SMALL).toInt())
+        val labelColor = UIUtil.getLabelForeground()
+        val mutedColor = UIUtil.getInactiveTextColor()
+
+        // Shape gets a dedicated dim-by-dim diff because it's the most common
+        // and most meaningful change in ML pipelines.
+        if (before.shape != null && after.shape != null && before.shape != after.shape) {
+            parent.add(buildShapeDiffRow(before.shape, after.shape, monoFont, labelColor, mutedColor))
+        } else if (before.shape != after.shape) {
+            parent.add(buildInlineRow("shape", before.shape ?: "—", after.shape ?: "—", monoFont, labelColor, mutedColor))
+        }
+
+        // Other stats: dtype, min/max, mean, std, preview.
+        val stats: List<Triple<String, String?, String?>> = listOf(
+            Triple("dtype", before.dtype, after.dtype),
+            Triple("min",   before.minValue, after.minValue),
+            Triple("max",   before.maxValue, after.maxValue),
+            Triple("mean",  before.meanValue, after.meanValue),
+            Triple("std",   before.stdValue, after.stdValue),
+            Triple("value", before.preview, after.preview),
+        )
+        for ((label, b, a) in stats) {
+            if (b != a && !(b.isNullOrBlank() && a.isNullOrBlank())) {
+                parent.add(buildInlineRow(label, b ?: "—", a ?: "—", monoFont, labelColor, mutedColor))
+            }
+        }
+    }
+
+    /**
+     * Build a single `label  before  →  after` row using monospace formatting.
+     * Visually compact; values are colour-coded when they're scalar so the
+     * before reads as muted/strikethrough and the after as the value of record.
+     */
+    private fun buildInlineRow(
+        label: String,
+        before: String,
+        after: String,
+        monoFont: Font,
+        labelColor: Color,
+        mutedColor: Color,
+    ): JComponent {
+        val row = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(6), 0)).apply {
+            isOpaque = false
+            alignmentX = Component.LEFT_ALIGNMENT
+            maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(20))
+        }
+        row.add(JBLabel(label).apply {
+            font = monoFont.deriveFont(Font.BOLD)
+            foreground = labelColor
+        })
+        row.add(JBLabel(before).apply {
+            font = monoFont
+            foreground = mutedColor
+        })
+        row.add(JBLabel("→").apply {
+            font = monoFont
+            foreground = mutedColor
+        })
+        row.add(JBLabel(after).apply {
+            font = monoFont
+            foreground = labelColor
+        })
+        return row
+    }
+
+    /**
+     * Specialised shape-diff renderer. Each dimension is rendered as its own
+     * small chip; dimensions that actually changed get a coloured tint so the
+     * eye instantly lands on the changed axes.
+     */
+    private fun buildShapeDiffRow(
+        beforeShape: String,
+        afterShape: String,
+        monoFont: Font,
+        labelColor: Color,
+        mutedColor: Color,
+    ): JComponent {
+        val row = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(6), 0)).apply {
+            isOpaque = false
+            alignmentX = Component.LEFT_ALIGNMENT
+            maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(22))
+        }
+        row.add(JBLabel("shape").apply {
+            font = monoFont.deriveFont(Font.BOLD)
+            foreground = labelColor
+        })
+        row.add(buildShapeChips(beforeShape, afterShape, beforeSide = true, monoFont, labelColor, mutedColor))
+        row.add(JBLabel("→").apply {
+            font = monoFont
+            foreground = mutedColor
+        })
+        row.add(buildShapeChips(afterShape, beforeShape, beforeSide = false, monoFont, labelColor, mutedColor))
+        return row
+    }
+
+    private fun buildShapeChips(
+        ownShape: String,
+        otherShape: String,
+        beforeSide: Boolean,
+        monoFont: Font,
+        labelColor: Color,
+        mutedColor: Color,
+    ): JComponent {
+        val own = parseShapeDims(ownShape)
+        val other = parseShapeDims(otherShape)
+        val row = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(2), 0)).apply {
+            isOpaque = false
+        }
+        for ((i, dim) in own.withIndex()) {
+            val changed = i >= other.size || other[i] != dim
+            val chip = JBLabel(dim).apply {
+                font = monoFont
+                foreground = if (changed) {
+                    if (beforeSide) FieldDetailPanel.diffStatusColor(FieldDiffStatus.REMOVED)
+                    else FieldDetailPanel.diffStatusColor(FieldDiffStatus.ADDED)
+                } else mutedColor
+            }
+            row.add(chip)
+            if (i < own.size - 1) {
+                row.add(JBLabel(",").apply {
+                    font = monoFont
+                    foreground = mutedColor
+                })
+            }
+        }
+        // Wrap with brackets.
+        val wrap = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
+            isOpaque = false
+        }
+        wrap.add(JBLabel("(").apply { font = monoFont; foreground = mutedColor })
+        wrap.add(row)
+        wrap.add(JBLabel(")").apply { font = monoFont; foreground = mutedColor })
+        return wrap
+    }
+
+    /** Parse "(3, 224, 224)" or "3 x 224 x 224" or "3,224,224" into ["3","224","224"]. */
+    private fun parseShapeDims(s: String): List<String> {
+        // Strip parens/brackets and split on common delimiters.
+        val cleaned = s.trim().removePrefix("(").removeSuffix(")").removePrefix("[").removeSuffix("]")
+        return cleaned.split(",", "x", "×").map { it.trim() }.filter { it.isNotEmpty() }
     }
 
     /**

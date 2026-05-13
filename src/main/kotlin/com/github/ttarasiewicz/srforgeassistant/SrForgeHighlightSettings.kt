@@ -50,7 +50,11 @@ class SrForgeHighlightSettings : PersistentStateComponent<SrForgeHighlightSettin
         // Pipeline Probe
         var probeTimeoutSeconds: Int = 120,
         var pathTraceDurationMs: Int = 400,
-        var pipelineDisplayMode: PipelineDisplayMode = PipelineDisplayMode.POLISHED
+        // The polished/timeline display mode is currently work-in-progress
+        // and disabled in the UI. The field is kept so saved settings and
+        // the chrome strategy code stay valid; [ProbeChrome.forCurrentMode]
+        // ignores the value and always returns the legacy chrome for now.
+        var pipelineDisplayMode: PipelineDisplayMode = PipelineDisplayMode.LEGACY
     )
 
     private var myState = SettingsState()
