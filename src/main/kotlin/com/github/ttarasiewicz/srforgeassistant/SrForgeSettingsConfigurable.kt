@@ -42,6 +42,7 @@ class SrForgeSettingsConfigurable : Configurable {
 
     // Pipeline Probe
     private lateinit var probeTimeoutSpinner: JSpinner
+    private lateinit var pathTraceDurationSpinner: JSpinner
 
     override fun getDisplayName(): String = "SR-Forge Assistant"
 
@@ -74,6 +75,7 @@ class SrForgeSettingsConfigurable : Configurable {
 
         // Pipeline Probe
         probeTimeoutSpinner = JSpinner(SpinnerNumberModel(s.probeTimeoutSeconds, 10, 600, 10))
+        pathTraceDurationSpinner = JSpinner(SpinnerNumberModel(s.pathTraceDurationMs, 100, 2000, 50))
 
         // Wire up dependent component toggling
         val disabledTip = "Enable the parent feature to configure this setting"
@@ -108,6 +110,7 @@ class SrForgeSettingsConfigurable : Configurable {
             // ── Pipeline Probe ──
             .addComponent(TitledSeparator("Pipeline Probe"))
             .addLabeledComponent("Probe timeout (seconds):", probeTimeoutSpinner)
+            .addLabeledComponent("YAML path trace duration (ms):", pathTraceDurationSpinner)
             .addComponentFillVertically(JPanel(), 0)
             .panel
 
@@ -133,6 +136,7 @@ class SrForgeSettingsConfigurable : Configurable {
             || autoCollapseCheckbox.isSelected != s.autoCollapseOnCaretExit
             || (foldMaxLengthSpinner.value as Int) != s.foldPlaceholderMaxLength
             || (probeTimeoutSpinner.value as Int) != s.probeTimeoutSeconds
+            || (pathTraceDurationSpinner.value as Int) != s.pathTraceDurationMs
     }
 
     override fun apply() {
@@ -155,6 +159,7 @@ class SrForgeSettingsConfigurable : Configurable {
         s.autoCollapseOnCaretExit = autoCollapseCheckbox.isSelected
         s.foldPlaceholderMaxLength = foldMaxLengthSpinner.value as Int
         s.probeTimeoutSeconds = probeTimeoutSpinner.value as Int
+        s.pathTraceDurationMs = pathTraceDurationSpinner.value as Int
 
         ApplicationManager.getApplication().messageBus
             .syncPublisher(SrForgeHighlightSettings.TOPIC)
@@ -180,6 +185,7 @@ class SrForgeSettingsConfigurable : Configurable {
         autoCollapseCheckbox.isSelected = s.autoCollapseOnCaretExit
         foldMaxLengthSpinner.value = s.foldPlaceholderMaxLength
         probeTimeoutSpinner.value = s.probeTimeoutSeconds
+        pathTraceDurationSpinner.value = s.pathTraceDurationMs
     }
 
     override fun disposeUIResources() {

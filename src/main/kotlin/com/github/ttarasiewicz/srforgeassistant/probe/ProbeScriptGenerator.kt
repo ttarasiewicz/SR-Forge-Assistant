@@ -36,7 +36,6 @@ object ProbeScriptGenerator {
         yamlFilePath: String,
         datasetPath: String,
         pipeline: DatasetNode,
-        pathOverrides: Map<String, String>,
         projectPaths: List<String>,
         branchChoices: Map<String, Int> = emptyMap(),
         tensorDir: String? = null
@@ -50,7 +49,6 @@ object ProbeScriptGenerator {
         val config = mutableMapOf<String, Any?>(
             "yamlPath" to yamlFilePath,
             "datasetPath" to datasetPath,
-            "pathOverrides" to pathOverrides,
             "projectPaths" to projectPaths,
             "branchChoices" to branchChoices,
             "datasetPaths" to datasetPaths.toList()

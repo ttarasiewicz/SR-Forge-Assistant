@@ -14,6 +14,7 @@ import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.Task
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.ComboBox
+import com.intellij.openapi.util.TextRange
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.psi.PsiManager
 import com.intellij.psi.util.PsiTreeUtil
@@ -30,13 +31,12 @@ import java.awt.event.MouseEvent
 import javax.swing.*
 
 /**
- * Holds all parameters needed to re-run a probe without showing the dialog.
+ * Holds all parameters needed to re-run a probe.
  */
 data class ProbeRunConfig(
     val yamlFilePath: String,
     val datasetPath: String,
     val pipeline: DatasetNode,
-    val pathOverrides: Map<String, String>,
     val projectPaths: List<String>,
     /**
      * For each composite dataset path (e.g. `dataset.training.params.datasets`),
@@ -76,13 +76,52 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
         toolTipText = "Cancel any running probe and clear all results " +
             "(frees memory used by snapshots and tensor files)"
         isEnabled = false
+        isVisible = false
         addActionListener { stopAndClear() }
     }
 
-    private val configureButton = JButton("Configure...").apply {
+    /**
+     * Status label that appears as the last item in the content panel while
+     * a probe is running. Sits just below the most-recently-emitted block so
+     * the user sees where the next snapshot will land. Carries an animated
+     * spinner icon plus the current step name. Theme-aware foreground keeps
+     * it readable on both light and dark themes (which painting the string
+     * directly on a JProgressBar would not).
+     */
+    private val progressLabel = JBLabel("").apply {
+        icon = com.intellij.ui.AnimatedIcon.Default.INSTANCE
+        iconTextGap = JBUI.scale(6)
+        alignmentX = Component.LEFT_ALIGNMENT
+    }
+
+    /** Thin indeterminate bar paired with [progressLabel]. */
+    private val progressBar = JProgressBar().apply {
+        isIndeterminate = true
+        maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(3))
+        preferredSize = Dimension(0, JBUI.scale(3))
+        alignmentX = Component.LEFT_ALIGNMENT
+    }
+
+    /**
+     * Bundled "step strip" widget — label + thin bar stacked vertically.
+     * Added to [contentPanel] at probe start, moved to the bottom after each
+     * block insertion, removed on Complete/Stop.
+     */
+    private val progressStrip = JPanel().apply {
+        layout = BoxLayout(this, BoxLayout.Y_AXIS)
+        isOpaque = false
+        alignmentX = Component.LEFT_ALIGNMENT
+        border = JBUI.Borders.empty(2, 0, 4, 0)
+        add(progressLabel)
+        add(javax.swing.Box.createVerticalStrut(JBUI.scale(3)))
+        add(progressBar)
+    }
+
+    private val configureButton = JButton("Pick dataset").apply {
         icon = ProbeIcons.Probe
-        toolTipText = "Select dataset and configure paths"
-        addActionListener { configureAndRun() }
+        toolTipText = "Pick a dataset to probe from the open YAML " +
+            "(hover gold markers to preview the path, click to run)"
+        addActionListener { enterMarkerMode() }
     }
 
     /** Progress indicator of the currently-running probe, if any. */
@@ -104,12 +143,12 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
     private var overlayEditor: Editor? = null
 
     /**
-     * Deepest dataset reachable in the most-recently-completed probe, with
-     * the current branch choices applied. After a successful run, the path
-     * overlay always shows root → this leaf; hovering a dropdown item
-     * temporarily replaces it with a preview.
+     * Start node of the path overlay for the currently-running or
+     * most-recently-completed probe. The overlay traces from this node down
+     * to its deepest leaf. Hovering a dropdown item temporarily replaces it
+     * with a preview; popup close restores this one.
      */
-    private var actualPathLeaf: DatasetNode? = null
+    private var actualPathStartNode: DatasetNode? = null
 
 
     init {
@@ -150,21 +189,22 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
         lastRunConfig = config
         rerunButton.isEnabled = false
         stopButton.isEnabled = true
+        stopButton.isVisible = true
         headerLabel.text = "Running probe..."
         headerLabel.icon = null
+        progressLabel.text = "Starting..."
         contentPanel.removeAll()
+        contentPanel.add(progressStrip)
         contentPanel.revalidate()
         contentPanel.repaint()
 
         // Build path→DatasetNode map for cache dir lookup on dataset_end
         val nodeMap = buildNodeMap(config.pipeline)
 
-        // The deepest leaf is deterministic given the config + branch choices —
-        // start the YAML path trace immediately so it animates in parallel with
-        // the probe rather than waiting for the run to finish.
-        val deepestLeaf = walkDeepestLeaf(config.pipeline, config.branchChoices)
-        actualPathLeaf = deepestLeaf
-        showPathForNode(deepestLeaf)
+        // Path trace starts at the probe's root (the user-picked dataset) and
+        // animates downward. It begins now, in parallel with the probe.
+        actualPathStartNode = config.pipeline
+        showPathForNode(config.pipeline)
 
         // Streaming state — mutated on EDT by the onEvent callback
         var lastSnapshot: EntrySnapshot? = null
@@ -175,6 +215,7 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
                 is ProbeEvent.DatasetStart -> {
                     val node = nodeMap[event.datasetPath]
                     addDatasetBlock(event.datasetName, event.datasetTarget, node)
+                    progressLabel.text = "Loading ${event.datasetName}..."
                 }
                 is ProbeEvent.Snapshot -> {
                     val snapshot = event.snapshot
@@ -191,6 +232,11 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
                     addConnector(null)
                     addStepBlock(snapshot, diffs)
                     lastSnapshot = snapshot
+                    progressLabel.text = if (snapshot.stepIndex == 0) {
+                        "Entry from ${snapshot.stepLabel}"
+                    } else {
+                        "Step ${snapshot.stepIndex}: ${snapshot.stepLabel}"
+                    }
                 }
                 is ProbeEvent.StepError -> {
                     hasErrors = true
@@ -202,10 +248,12 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
                     )
                     addConnector(null)
                     addErrorStepBlock(errorSnapshot, event.errorMessage, event.errorTraceback)
+                    progressLabel.text = "Error at step ${event.stepIndex}: ${event.stepLabel}"
                 }
                 is ProbeEvent.InitError -> {
                     hasErrors = true
                     addInitErrorBlock(event.errorMessage, event.errorTraceback)
+                    progressLabel.text = "Dataset init failed"
                 }
                 is ProbeEvent.Connector -> {
                     // Keep lastSnapshot so the outer dataset's first snapshot
@@ -234,7 +282,12 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
                     }
                     rerunButton.isEnabled = lastRunConfig != null
                     stopButton.isEnabled = hasState
+                    stopButton.isVisible = hasState
                     activeProbeIndicator = null
+                    progressLabel.text = ""
+                    if (progressStrip.parent === contentPanel) {
+                        contentPanel.remove(progressStrip)
+                    }
                     // The path overlay was already started at executeProbe();
                     // nothing to do here — it stays put through completion
                     // and the pulse continues on the leaf.
@@ -243,6 +296,13 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
                     hasErrors = true
                     addTopLevelErrorBlock(event.errorMessage, event.errorTraceback)
                 }
+            }
+
+            // Keep the running-probe strip pinned at the bottom of the
+            // content panel so the user sees where the next block lands.
+            if (progressStrip.parent === contentPanel) {
+                contentPanel.remove(progressStrip)
+                contentPanel.add(progressStrip)
             }
 
             contentPanel.revalidate()
@@ -294,7 +354,6 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
             yamlFilePath = freshConfig.yamlFilePath,
             datasetPath = freshConfig.datasetPath,
             pipeline = freshConfig.pipeline,
-            pathOverrides = freshConfig.pathOverrides,
             projectPaths = freshConfig.projectPaths,
             branchChoices = freshConfig.branchChoices
         )
@@ -302,85 +361,145 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
         executeProbe(script, configJson, freshConfig)
     }
 
-    // ── Configure & Run ─────────────────────────────────────────────────
+    // ── Pick & Run (marker mode) ────────────────────────────────────────
 
-    private fun configureAndRun() {
-        // Save all documents so the Python probe reads the latest content from disk
+    /** The active dataset-marker selection mode, if any. */
+    private var markerMode: DatasetMarkerMode? = null
+
+    /**
+     * Activate the marker overlay in the focused YAML editor: every Dataset
+     * `_target:` value gets a clickable pulsing-dot + dotted-underline marker.
+     * Hovering one previews the path; clicking one runs the probe from that
+     * dataset down.
+     */
+    fun enterMarkerMode() {
+        // Save all documents so the Python probe reads the latest content from disk.
         WriteAction.runAndWait<Throwable> {
             FileDocumentManager.getInstance().saveAllDocuments()
         }
 
-        // PSI access requires a read action
-        val (yamlFile, datasets) = com.intellij.openapi.application.ReadAction.compute<Pair<YAMLFile?, List<Pair<String, DatasetNode>>>, Throwable> {
-            val file = findYamlFile()
-            val nodes = if (file != null) YamlPipelineParser.findDatasetNodes(file, project) else emptyList()
-            file to nodes
+        val data = com.intellij.openapi.application.ReadAction.compute<MarkerData?, Throwable> {
+            val editor = focusedYamlEditor() ?: return@compute null
+            val yamlFile = PsiManager.getInstance(project).findFile(editor.virtualFile ?: return@compute null)
+                as? YAMLFile ?: return@compute null
+            val all = collectAllDatasets(YamlPipelineParser.findDatasetNodes(yamlFile, project))
+            if (all.isEmpty()) return@compute null
+            val markers = all.mapNotNull { node ->
+                val range = findTargetValueRange(yamlFile, node) ?: return@mapNotNull null
+                DatasetMarkerMode.Marker(node, range)
+            }
+            if (markers.isEmpty()) null else MarkerData(editor, markers)
         }
 
-        if (yamlFile == null) {
-            showNotification("No YAML file is open. Open an SR-Forge config file first.")
+        if (data == null) {
+            showNotification("No dataset definitions found in the focused YAML file.")
             return
         }
-        if (datasets.isEmpty()) {
-            showNotification("No dataset definitions found in this YAML file.")
-            return
-        }
-
-        val dialog = DatasetSelectorDialog(project, datasets)
-        if (!dialog.showAndGet()) return
-
-        val selectedPath = dialog.selectedDatasetPath
-        val pathOverrides = dialog.pathOverrides
-        val selectedNode = datasets.firstOrNull { it.first == selectedPath }?.second ?: return
 
         val sdk = ProbeExecutor.getPythonSdk(project)
-        if (sdk == null) {
-            showNotification("No Python SDK configured for this project.")
-            return
-        }
-        if (ProbeExecutor.getPythonPath(sdk) == null) {
-            showNotification("Cannot determine Python interpreter path from SDK.")
+        if (sdk == null || ProbeExecutor.getPythonPath(sdk) == null) {
+            showNotification("No Python interpreter configured for this project.")
             return
         }
 
-        val yamlFilePath = yamlFile.virtualFile?.path ?: return
+        markerMode?.deactivate()
+        markerMode = DatasetMarkerMode(
+            editor = data.editor,
+            markers = data.markers,
+            onHover = { node ->
+                if (node != null) showPathForNode(node) else clearPathOverlay()
+            },
+            onPick = { node, choices ->
+                markerMode = null
+                executeProbeFromNode(node, data.editor.virtualFile?.path, choices)
+            },
+            onExit = {
+                markerMode = null
+                clearPathOverlay()
+            },
+            onBranchChange = { node ->
+                // Re-render the overlay with the user's new branch choice.
+                showPathForNode(node)
+            },
+        ).also { it.activate() }
+    }
+
+    private data class MarkerData(
+        val editor: Editor,
+        val markers: List<DatasetMarkerMode.Marker>,
+    )
+
+    private fun executeProbeFromNode(
+        node: DatasetNode,
+        yamlFilePath: String?,
+        branchChoices: Map<String, Int> = emptyMap(),
+    ) {
+        val path = yamlFilePath ?: return
         val projectPaths = ProbeExecutor.getProjectSourcePaths(project)
-
         val config = ProbeRunConfig(
-            yamlFilePath = yamlFilePath,
-            datasetPath = selectedPath,
-            pipeline = selectedNode,
-            pathOverrides = pathOverrides,
-            projectPaths = projectPaths
+            yamlFilePath = path,
+            datasetPath = node.path,
+            pipeline = node,
+            projectPaths = projectPaths,
+            branchChoices = branchChoices,
         )
-
         val script = ProbeScriptGenerator.loadScript()
         val configJson = ProbeScriptGenerator.generateConfig(
             yamlFilePath = config.yamlFilePath,
             datasetPath = config.datasetPath,
             pipeline = config.pipeline,
-            pathOverrides = config.pathOverrides,
             projectPaths = config.projectPaths,
-            branchChoices = config.branchChoices
+            branchChoices = config.branchChoices,
         )
-
         executeProbe(script, configJson, config)
     }
 
-    // ── Helpers ──────────────────────────────────────────────────────────
-
-    private fun findYamlFile(): YAMLFile? {
-        // Try the last run's file first
-        val lastPath = lastRunConfig?.yamlFilePath
-        if (lastPath != null) {
-            val vf = com.intellij.openapi.vfs.LocalFileSystem.getInstance().findFileByPath(lastPath)
-            val psi = vf?.let { PsiManager.getInstance(project).findFile(it) }
-            if (psi is YAMLFile) return psi
+    private fun focusedYamlEditor(): Editor? {
+        val fem = FileEditorManager.getInstance(project)
+        val selected = fem.selectedEditor as? TextEditor
+        if (selected != null && selected.file?.extension?.lowercase() in setOf("yaml", "yml")) {
+            return selected.editor
         }
-        // Fall back to the currently open editor
-        val vf = FileEditorManager.getInstance(project).selectedFiles.firstOrNull()
-        return vf?.let { PsiManager.getInstance(project).findFile(it) } as? YAMLFile
+        // Fall back: any open YAML editor.
+        return fem.allEditors.asSequence()
+            .filterIsInstance<TextEditor>()
+            .firstOrNull { it.file?.extension?.lowercase() in setOf("yaml", "yml") }
+            ?.editor
     }
+
+    /**
+     * Flatten a tree of top-level [DatasetNode]s into a single list containing
+     * every dataset reachable through `wrappedDataset` and `branches`.
+     */
+    private fun collectAllDatasets(
+        top: List<Pair<String, DatasetNode>>
+    ): List<DatasetNode> {
+        val out = mutableListOf<DatasetNode>()
+        fun walk(n: DatasetNode) {
+            out.add(n)
+            n.wrappedDataset?.let { walk(it) }
+            for (b in n.branches) walk(b)
+        }
+        for ((_, t) in top) walk(t)
+        return out
+    }
+
+    /**
+     * Locate the `_target:` value's text range inside the YAML mapping at
+     * [node]'s offset. Returns null if the mapping isn't found or doesn't
+     * have a `_target:` key (shouldn't happen for parsed dataset nodes).
+     */
+    private fun findTargetValueRange(yamlFile: YAMLFile, node: DatasetNode): TextRange? {
+        val element = yamlFile.findElementAt(node.yamlOffset)
+            ?: yamlFile.findElementAt(node.yamlOffset + 1)
+            ?: return null
+        val mapping = PsiTreeUtil.getParentOfType(element, YAMLMapping::class.java)
+            ?: return null
+        val targetKv = mapping.keyValues.firstOrNull { it.keyText == "_target" } ?: return null
+        return (targetKv.value as? org.jetbrains.yaml.psi.YAMLScalar)?.textRange
+    }
+
+    // ── Helpers ──────────────────────────────────────────────────────────
 
     private fun showNotification(message: String) {
         try {
@@ -865,31 +984,43 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
     // ── YAML path overlay ─────────────────────────────────────────────────
 
     /**
-     * Animate a traced path overlay in the source editor connecting every
-     * ancestor key of [node] down to the leaf, then settle into a continuous
-     * pulse at the leaf. Replaces any active path overlay. Scrolls the leaf
-     * into view if it's currently off-screen.
+     * Animate a path overlay in the source editor that starts at [startNode]
+     * and traces downward through `wrappedDataset` and the currently-chosen
+     * branch of every composite to the deepest reachable leaf, where a
+     * continuous pulse settles. Replaces any active overlay. Scrolls the
+     * leaf into view if it's off-screen.
      *
-     * No-op if the YAML editor isn't open or the offset has gone stale.
+     * The overlay anchor is always the path FROM [startNode] DOWN — the
+     * outer YAML structure above [startNode] is not connected. This matches
+     * the probe's own behavior: a probe rooted at [startNode] only
+     * instantiates that dataset and its descendants.
+     *
+     * No-op if the YAML editor isn't open.
      */
-    private fun showPathForNode(node: DatasetNode) {
-        val cfg = lastRunConfig ?: return
-        val vf = LocalFileSystem.getInstance().findFileByPath(cfg.yamlFilePath) ?: return
+    private fun showPathForNode(
+        startNode: DatasetNode,
+        choicesOverride: Map<String, Int>? = null,
+    ) {
+        val yamlPath = lastRunConfig?.yamlFilePath
+            ?: focusedYamlEditor()?.virtualFile?.path
+            ?: return
+        val vf = LocalFileSystem.getInstance().findFileByPath(yamlPath) ?: return
         val editor = FileEditorManager.getInstance(project).getEditors(vf)
             .filterIsInstance<TextEditor>()
             .firstOrNull()
             ?.editor
             ?: return
 
-        val offsets = ReadAction.compute<List<Int>, Throwable> {
-            val psiFile = PsiManager.getInstance(project).findFile(vf) as? YAMLFile
-                ?: return@compute emptyList()
-            collectPathOffsets(psiFile, node.yamlOffset)
-        }
-        if (offsets.isEmpty()) return
+        // Precedence: explicit override (popup hover preview) > marker-mode
+        // live choices (wheel-driven) > last run's saved choices > empty.
+        val choices = choicesOverride
+            ?: markerMode?.branchChoices
+            ?: lastRunConfig?.branchChoices
+            ?: emptyMap()
+        val (edges, nodes) = computePathTree(startNode, choices)
+        if (nodes.isEmpty()) return
 
-        // If the editor we're decorating changed (different file/editor),
-        // discard the old overlay before constructing a new one.
+        // Switching editors discards the previous overlay; otherwise just reset.
         if (overlayEditor !== editor) {
             clearPathOverlay()
         } else {
@@ -899,12 +1030,68 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
             pathOverlay = it
             overlayEditor = editor
         }
-        overlay.show(offsets)
+        overlay.show(edges, nodes)
 
+        // Scroll the primary leaf into view, if there is one; otherwise any leaf.
+        val primaryLeafOffset = nodes.firstOrNull { it.isLeaf && it.isPrimary }?.offset
+            ?: nodes.firstOrNull { it.isLeaf }?.offset
+            ?: nodes.last().offset
         editor.scrollingModel.scrollTo(
-            editor.offsetToLogicalPosition(offsets.last()),
+            editor.offsetToLogicalPosition(primaryLeafOffset),
             ScrollType.MAKE_VISIBLE,
         )
+    }
+
+    /**
+     * Build the path tree rooted at [start]: every wrapped-child becomes a
+     * single linear edge, every composite fans out to *all* its branches.
+     * The chosen branch of each composite is marked primary; siblings are
+     * alternative. Inheritance: once you're on an alternative branch, all
+     * descendants of that branch are alternative too.
+     */
+    private fun computePathTree(
+        start: DatasetNode,
+        choices: Map<String, Int>,
+    ): Pair<List<YamlPathOverlay.PathEdge>, List<YamlPathOverlay.PathNode>> {
+        val edges = mutableListOf<YamlPathOverlay.PathEdge>()
+        val nodes = mutableListOf<YamlPathOverlay.PathNode>()
+
+        fun walk(node: DatasetNode, isPrimary: Boolean, depth: Int) {
+            val wrapped = node.wrappedDataset
+            val branches = node.branches
+            val hasChildren = wrapped != null || branches.isNotEmpty()
+            nodes.add(YamlPathOverlay.PathNode(
+                offset = node.yamlOffset,
+                isLeaf = !hasChildren,
+                isPrimary = isPrimary,
+                depth = depth,
+            ))
+            if (wrapped != null) {
+                edges.add(YamlPathOverlay.PathEdge(
+                    from = node.yamlOffset,
+                    to = wrapped.yamlOffset,
+                    isPrimary = isPrimary,
+                    depth = depth + 1,
+                ))
+                walk(wrapped, isPrimary, depth + 1)
+            } else if (branches.isNotEmpty()) {
+                val key = "${node.path}.params.${node.branchesParamKey ?: "datasets"}"
+                val chosenIdx = (choices[key] ?: 0).coerceIn(0, branches.size - 1)
+                for ((i, branch) in branches.withIndex()) {
+                    val branchPrimary = isPrimary && i == chosenIdx
+                    edges.add(YamlPathOverlay.PathEdge(
+                        from = node.yamlOffset,
+                        to = branch.yamlOffset,
+                        isPrimary = branchPrimary,
+                        depth = depth + 1,
+                    ))
+                    walk(branch, branchPrimary, depth + 1)
+                }
+            }
+        }
+
+        walk(start, isPrimary = true, depth = 0)
+        return edges to nodes
     }
 
     private fun clearPathOverlay() {
@@ -927,7 +1114,10 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
         activeProbeIndicator = null
 
         clearPathOverlay()
-        actualPathLeaf = null
+        actualPathStartNode = null
+
+        markerMode?.deactivate()
+        markerMode = null
 
         contentPanel.removeAll()
         contentPanel.revalidate()
@@ -938,8 +1128,13 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
         lastRunConfig = null
         rerunButton.isEnabled = false
         stopButton.isEnabled = false
+        stopButton.isVisible = false
         headerLabel.text = "No probe results yet."
         headerLabel.icon = null
+        progressLabel.text = ""
+        // The strip is a child of contentPanel; contentPanel.removeAll()
+        // above already detached it, but null-out its parent reference
+        // defensively in case anyone holds onto it.
     }
 
     /**
@@ -968,18 +1163,35 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
     private fun attachBranchPreviewOnHover(combo: ComboBox<String>, composite: DatasetNode) {
         var motion: java.awt.event.MouseMotionListener? = null
         var hookedList: javax.swing.JList<*>? = null
+        // Tracks the last item the cursor previewed. Reset to -1 each time
+        // the popup opens so the first real hover always fires.
+        var lastPreviewedIdx = -1
 
         combo.addPopupMenuListener(object : javax.swing.event.PopupMenuListener {
             override fun popupMenuWillBecomeVisible(e: javax.swing.event.PopupMenuEvent) {
                 val list = comboPopupList(combo) ?: return
                 hookedList = list
+                lastPreviewedIdx = -1
                 val ml = object : java.awt.event.MouseMotionAdapter() {
                     override fun mouseMoved(e: java.awt.event.MouseEvent) {
                         val idx = list.locationToIndex(e.point)
                         if (idx < 0 || idx >= composite.branches.size) return
+                        // Only re-render when the hovered item actually changes;
+                        // tiny mouse jitter within the same item shouldn't
+                        // restart the trace animation.
+                        if (idx == lastPreviewedIdx) return
+                        lastPreviewedIdx = idx
                         val cfg = lastRunConfig ?: return
-                        val previewLeaf = walkDeepestLeaf(composite.branches[idx], cfg.branchChoices)
-                        showPathForNode(previewLeaf)
+                        // Trace the FULL path from the probe's root (so the
+                        // outer wrappers stay visible) with this composite's
+                        // chosen branch overridden to the hovered index.
+                        // Other branches will render in the darker "alt"
+                        // color via the normal multi-branch logic.
+                        val compositeKey = "${composite.path}.params." +
+                            (composite.branchesParamKey ?: "datasets")
+                        val temp = cfg.branchChoices.toMutableMap()
+                        temp[compositeKey] = idx
+                        showPathForNode(cfg.pipeline, choicesOverride = temp)
                     }
                 }
                 list.addMouseMotionListener(ml)
@@ -994,7 +1206,7 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
                 // branch, the combo's ActionListener will fire next and
                 // trigger a re-probe (which clears the overlay and then
                 // sets a new one when the run completes).
-                actualPathLeaf?.let { showPathForNode(it) }
+                actualPathStartNode?.let { showPathForNode(it) }
             }
 
             override fun popupMenuCanceled(e: javax.swing.event.PopupMenuEvent) {
@@ -1011,37 +1223,6 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
         val popup = combo.ui.getAccessibleChild(combo, 0)
             as? javax.swing.plaf.basic.BasicComboPopup
         return popup?.list
-    }
-
-    /**
-     * Walk up from the target mapping at [yamlOffset], collecting the offset
-     * of each ancestor key (or the dash of each ancestor sequence-item). Returns
-     * the offsets root-first, with the leaf — the target mapping's containing
-     * key or sequence-item — last.
-     */
-    private fun collectPathOffsets(psiFile: YAMLFile, yamlOffset: Int): List<Int> {
-        val element = psiFile.findElementAt(yamlOffset)
-            ?: psiFile.findElementAt(yamlOffset + 1)
-            ?: return emptyList()
-        val targetMapping = PsiTreeUtil.getParentOfType(element, YAMLMapping::class.java)
-            ?: return emptyList()
-
-        val out = mutableListOf<Int>()
-        var current: com.intellij.psi.PsiElement? = targetMapping
-        while (current != null) {
-            when (current) {
-                is org.jetbrains.yaml.psi.YAMLKeyValue -> {
-                    val keyOffset = current.key?.textOffset ?: current.textOffset
-                    out.add(keyOffset)
-                }
-                is org.jetbrains.yaml.psi.YAMLSequenceItem -> {
-                    out.add(current.textOffset)
-                }
-            }
-            current = current.parent
-        }
-        // Walked leaf -> root; flip so root is first, leaf is last.
-        return out.asReversed()
     }
 
     companion object {

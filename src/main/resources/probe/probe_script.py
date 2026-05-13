@@ -218,41 +218,39 @@ def _snapshot_entry(entry, label, step_index, tensor_dir=None):
 
 # ── Probe logic ─────────────────────────────────────────────────────
 
-def _apply_overrides(node, overrides):
-    """Apply path overrides to 'root' params recursively (follows single-child
-    wrappers and multi-child composites alike)."""
-    from omegaconf import DictConfig, ListConfig, open_dict
-    if not overrides:
-        return
-    if isinstance(node, DictConfig):
-        with open_dict(node):
-            if 'params' in node and node.params is not None:
-                if 'root' in node.params:
-                    original = str(node.params.root)
-                    if original in overrides:
-                        node.params.root = overrides[original]
-                for k in node.params:
-                    child = node.params[k]
-                    if isinstance(child, DictConfig) and '_target' in child:
-                        _apply_overrides(child, overrides)
-                    elif isinstance(child, ListConfig):
-                        for item in child:
-                            if isinstance(item, DictConfig) and '_target' in item:
-                                _apply_overrides(item, overrides)
+_PATH_PART_RE = re.compile(r'([^.\[]+)(?:\[(\d+)\])?')
 
 
-def _probe_dataset(cfg, dataset_path, path_overrides, branch_choices,
+def _navigate(cfg, path):
+    """Walk an OmegaConf config by a dotted path that may carry [N] indices.
+
+    Examples of paths the plugin produces:
+        dataset.training
+        dataset.training.params.dataset
+        dataset.training.params.datasets[0]
+        dataset.training.params.datasets[0].params.dataset
+    """
+    node = cfg
+    for part in path.split('.'):
+        if not part:
+            continue
+        m = _PATH_PART_RE.fullmatch(part)
+        if not m:
+            raise ValueError(f"Unparseable path segment: {part!r} in {path!r}")
+        key, idx = m.group(1), m.group(2)
+        node = node[key]
+        if idx is not None:
+            node = node[int(idx)]
+    return node
+
+
+def _probe_dataset(cfg, dataset_path, branch_choices,
                    dataset_paths, tensor_dir=None):
     """Probe a dataset using SR-Forge's ConfigResolver for instantiation."""
     from omegaconf import DictConfig
 
     # Navigate to the dataset config node
-    node = cfg
-    for part in dataset_path.split('.'):
-        node = node[part]
-
-    # Apply path overrides
-    _apply_overrides(node, path_overrides)
+    node = _navigate(cfg, dataset_path)
 
     # Import ConfigResolver early — this registers the ${ref:...} OmegaConf
     # resolver, which is needed before any config value access.
@@ -453,7 +451,6 @@ def main():
         _probe_dataset(
             cfg,
             probe_config['datasetPath'],
-            probe_config.get('pathOverrides', {}),
             probe_config.get('branchChoices', {}),
             set(probe_config.get('datasetPaths', [])),
             tensor_dir=tensor_dir,

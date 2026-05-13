@@ -39,7 +39,8 @@ class SrForgeHighlightSettings : PersistentStateComponent<SrForgeHighlightSettin
         var foldPlaceholderMaxLength: Int = 60,
 
         // Pipeline Probe
-        var probeTimeoutSeconds: Int = 120
+        var probeTimeoutSeconds: Int = 120,
+        var pathTraceDurationMs: Int = 400
     )
 
     private var myState = SettingsState()
