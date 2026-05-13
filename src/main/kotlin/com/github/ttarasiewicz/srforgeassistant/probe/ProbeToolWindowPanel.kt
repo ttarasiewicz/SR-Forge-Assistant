@@ -53,12 +53,40 @@ data class ProbeRunConfig(
  */
 class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()) {
 
+    /**
+     * Active visual chrome. Read live via [ProbeChrome.current] so any
+     * settings-change hot-swap is reflected next time a component asks for
+     * style (factory methods, style appliers, etc.).
+     */
+    private val chrome: ProbeChrome get() = ProbeChrome.current
+
     private val contentPanel = JPanel().apply {
         layout = BoxLayout(this, BoxLayout.Y_AXIS)
         border = JBUI.Borders.empty(12)
     }
-    private val scrollPane = JBScrollPane(contentPanel)
-    private val headerLabel = JBLabel("No probe results yet.")
+
+    /**
+     * Anchor wrapper that pins [contentPanel] to the top of the viewport.
+     *
+     * Without this, when the viewport is taller than [contentPanel]'s preferred
+     * height (few transforms, lots of empty space), `ViewportLayout` stretches
+     * the non-`Scrollable` view to fill the viewport. The extra height then
+     * cascades down through every nested `BoxLayout.Y_AXIS` whose children have
+     * `maxSize.height = MAX_VALUE` — blocks balloon, field rows grow taller
+     * than one line, the pipeline visually fills the window.
+     *
+     * Putting [contentPanel] in a `BorderLayout.NORTH` slot keeps it at exactly
+     * its preferred size; any excess viewport height becomes empty space in
+     * the wrapper's `CENTER` instead of being distributed into the blocks.
+     */
+    private val contentAnchor = JPanel(BorderLayout()).apply {
+        isOpaque = false
+        add(contentPanel, BorderLayout.NORTH)
+    }
+    private val scrollPane = JBScrollPane(contentAnchor)
+    private val headerLabel = JBLabel("No probe results yet.").also {
+        chrome.applyHeaderLabelStyle(it)
+    }
 
     /** Temp directory for .npy tensor files from the current probe run. */
     private var tensorTempDir: java.io.File? = null
@@ -67,6 +95,7 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
         icon = AllIcons.Actions.Refresh
         toolTipText = "Re-run the last probe (same dataset and settings)"
         isEnabled = false
+        chrome.applyButtonStyle(this)
         addActionListener { rerunProbe() }
     }
 
@@ -77,6 +106,7 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
             "(frees memory used by snapshots and tensor files)"
         isEnabled = false
         isVisible = false
+        chrome.applyButtonStyle(this)
         addActionListener { stopAndClear() }
     }
 
@@ -94,13 +124,8 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
         alignmentX = Component.LEFT_ALIGNMENT
     }
 
-    /** Thin indeterminate bar paired with [progressLabel]. */
-    private val progressBar = JProgressBar().apply {
-        isIndeterminate = true
-        maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(3))
-        preferredSize = Dimension(0, JBUI.scale(3))
-        alignmentX = Component.LEFT_ALIGNMENT
-    }
+    /** Thin indeterminate bar paired with [progressLabel]. Swapped on chrome change. */
+    private var progressBar: JComponent = chrome.newProgressBar()
 
     /**
      * Bundled "step strip" widget — label + thin bar stacked vertically.
@@ -121,6 +146,7 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
         icon = ProbeIcons.Probe
         toolTipText = "Pick a dataset to probe from the open YAML " +
             "(hover gold markers to preview the path, click to run)"
+        chrome.applyButtonStyle(this)
         addActionListener { enterMarkerMode() }
     }
 
@@ -150,11 +176,22 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
      */
     private var actualPathStartNode: DatasetNode? = null
 
+    /**
+     * Top-of-tool-window header panel. Captured as a field so we can re-style
+     * (border, opacity, repaint) on a chrome hot-swap.
+     */
+    private val headerPanel: JPanel = object : JPanel(BorderLayout()) {
+        override fun paintComponent(g: Graphics) {
+            if (!chrome.paintHeaderBackground(g, width, height)) {
+                super.paintComponent(g)
+            }
+        }
+    }
+
 
     init {
-        val headerPanel = JPanel(BorderLayout()).apply {
-            border = JBUI.Borders.empty(6, 12, 6, 8)
-        }
+        headerPanel.border = chrome.headerBorder
+        headerPanel.isOpaque = chrome.isHeaderOpaque
         headerPanel.add(headerLabel, BorderLayout.WEST)
 
         val buttonBar = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(4), 0)).apply {
@@ -167,6 +204,80 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
 
         add(headerPanel, BorderLayout.NORTH)
         add(scrollPane, BorderLayout.CENTER)
+
+        // Hot-swap: when the display-mode setting changes, refresh the chrome
+        // and rebuild every block from the recorded actions. The probe data
+        // (snapshots, diffs, config) is untouched — only the visual chrome.
+        com.intellij.openapi.application.ApplicationManager.getApplication().messageBus
+            .connect(project)
+            .subscribe(
+                com.github.ttarasiewicz.srforgeassistant.SrForgeHighlightSettings.TOPIC,
+                com.github.ttarasiewicz.srforgeassistant.SrForgeHighlightSettings.SettingsListener {
+                    if (ProbeChrome.refresh()) rebuildUiForChromeChange()
+                },
+            )
+    }
+
+    /**
+     * Record of every block-emit that's currently visible. On a chrome
+     * hot-swap we clear [contentPanel] and replay each entry through the
+     * new chrome — the snapshot data is preserved, only the visuals change.
+     */
+    private val recordedActions = mutableListOf<RenderAction>()
+
+    /**
+     * Apply the current chrome to top-level widgets (header bar, buttons,
+     * progress bar), then clear [contentPanel] and replay every block from
+     * [recordedActions]. Called when the user toggles display mode while
+     * results are showing.
+     */
+    private fun rebuildUiForChromeChange() {
+        val actions = recordedActions.toList()
+        recordedActions.clear()
+
+        // Re-style top widgets.
+        chrome.applyHeaderLabelStyle(headerLabel)
+        chrome.applyButtonStyle(rerunButton)
+        chrome.applyButtonStyle(stopButton)
+        chrome.applyButtonStyle(configureButton)
+        headerPanel.border = chrome.headerBorder
+        headerPanel.isOpaque = chrome.isHeaderOpaque
+        headerPanel.repaint()
+
+        // Swap the progress-bar widget (each chrome owns its own type).
+        val wasProgressShown = (0 until contentPanel.componentCount)
+            .any { contentPanel.getComponent(it) === progressStrip }
+        progressStrip.remove(progressBar)
+        chrome.disposeProgressBar(progressBar)
+        progressBar = chrome.newProgressBar()
+        progressStrip.add(progressBar)
+
+        // Throw away every block (their removeNotify will tear down their
+        // chrome state) and replay through the new chrome.
+        contentPanel.removeAll()
+        for (action in actions) replay(action)
+        if (wasProgressShown) {
+            contentPanel.add(progressStrip)
+        }
+        contentPanel.revalidate()
+        contentPanel.repaint()
+    }
+
+    private fun replay(action: RenderAction) {
+        when (action) {
+            is RenderAction.Dataset ->
+                addDatasetBlock(action.name, action.target, action.node)
+            is RenderAction.Cache -> addCacheBlock(action.cacheDir)
+            is RenderAction.Step -> addStepBlock(action.snapshot, action.diffs)
+            is RenderAction.ErrorStep ->
+                addErrorStepBlock(action.snapshot, action.errorMessage, action.errorTraceback)
+            is RenderAction.InitError ->
+                addInitErrorBlock(action.errorMessage, action.errorTraceback)
+            is RenderAction.TopLevelError ->
+                addTopLevelErrorBlock(action.errorMessage, action.errorTraceback)
+            is RenderAction.Connector -> addConnector(action.label)
+            is RenderAction.Skipped -> addSkippedNotice()
+        }
     }
 
     // ── Streaming execution ────────────────────────────────────────────
@@ -194,6 +305,7 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
         headerLabel.icon = null
         progressLabel.text = "Starting..."
         contentPanel.removeAll()
+        recordedActions.clear()
         contentPanel.add(progressStrip)
         contentPanel.revalidate()
         contentPanel.repaint()
@@ -515,19 +627,11 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
     // ── Block rendering ────────────────────────────────────────────────
 
     private fun addDatasetBlock(name: String, target: String, node: DatasetNode? = null) {
-        val block = object : JPanel(BorderLayout()) {
-            override fun paintComponent(g: Graphics) {
-                val g2 = g as Graphics2D
-                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-                g2.color = background
-                g2.fillRoundRect(0, 0, width, height, JBUI.scale(8), JBUI.scale(8))
-            }
-        }.apply {
-            isOpaque = false
-            background = JBColor(Color(0x1976D2), Color(0x1565C0))
-            border = JBUI.Borders.empty(10, 14)
-            maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(48))
-            alignmentX = Component.LEFT_ALIGNMENT
+        recordedActions += RenderAction.Dataset(name, target, node)
+        val block = PipelineBlock(BlockKind.DATASET).apply {
+            layout = BorderLayout()
+            border = JBUI.Borders.empty(10, 14, 10 + extraBottom, 14)
+            maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(48) + extraBottom)
         }
 
         val nameLabel = JBLabel(name).apply {
@@ -576,21 +680,11 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
     }
 
     private fun addCacheBlock(cacheDir: String) {
-        val block = object : JPanel(BorderLayout()) {
-            override fun paintComponent(g: Graphics) {
-                val g2 = g as Graphics2D
-                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-                g2.color = background
-                g2.fillRoundRect(0, 0, width, height, JBUI.scale(8), JBUI.scale(8))
-                g2.color = CACHE_BLOCK_BORDER
-                g2.drawRoundRect(0, 0, width - 1, height - 1, JBUI.scale(8), JBUI.scale(8))
-            }
-        }.apply {
-            isOpaque = false
-            background = CACHE_BLOCK_BG
-            border = JBUI.Borders.empty(8, 14)
-            maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(40))
-            alignmentX = Component.LEFT_ALIGNMENT
+        recordedActions += RenderAction.Cache(cacheDir)
+        val block = PipelineBlock(BlockKind.CACHE).apply {
+            layout = BorderLayout()
+            border = JBUI.Borders.empty(8, 14, 8 + extraBottom, 14)
+            maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(40) + extraBottom)
         }
 
         val label = JBLabel("Cached \u2192 $cacheDir").apply {
@@ -605,20 +699,10 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
     }
 
     private fun addStepBlock(snapshot: EntrySnapshot, diffs: List<FieldDiff>) {
-        val block = object : JPanel() {
-            override fun paintComponent(g: Graphics) {
-                val g2 = g as Graphics2D
-                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-                g2.color = STEP_BLOCK_BG
-                g2.fillRoundRect(0, 0, width, height, JBUI.scale(8), JBUI.scale(8))
-                g2.color = STEP_BLOCK_BORDER
-                g2.drawRoundRect(0, 0, width - 1, height - 1, JBUI.scale(8), JBUI.scale(8))
-            }
-        }.apply {
+        recordedActions += RenderAction.Step(snapshot, diffs)
+        val block = PipelineBlock(BlockKind.STEP).apply {
             layout = BoxLayout(this, BoxLayout.Y_AXIS)
-            isOpaque = false
-            border = JBUI.Borders.empty(10, 12)
-            alignmentX = Component.LEFT_ALIGNMENT
+            border = JBUI.Borders.empty(10, 12, 10 + extraBottom, 12)
             maximumSize = Dimension(Int.MAX_VALUE, Int.MAX_VALUE)
         }
 
@@ -636,16 +720,18 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
             cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
         }
 
-        val collapseLabel = JBLabel("\u25BE").apply {
-            foreground = UIUtil.getInactiveTextColor()
-            border = JBUI.Borders.emptyRight(6)
-        }
+        val collapseLabel = chrome.newChevron(
+            initialExpanded = true,
+            legacyRightPadding = 6,
+        )
 
         val stepNameLabel = JBLabel(snapshot.stepLabel).apply {
             font = font.deriveFont(Font.BOLD, font.size + 1f)
         }
 
-        val leftHeader = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
+        val leftHeader = JPanel(
+            FlowLayout(FlowLayout.LEFT, chrome.stepLeftHeaderHgap, 0)
+        ).apply {
             isOpaque = false
             add(collapseLabel)
             add(stepNameLabel)
@@ -665,7 +751,7 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
         headerRow.addMouseListener(object : MouseAdapter() {
             override fun mouseClicked(e: MouseEvent) {
                 fieldsPanel.isVisible = !fieldsPanel.isVisible
-                collapseLabel.text = if (fieldsPanel.isVisible) "\u25BE" else "\u25B8"
+                chrome.setChevronExpanded(collapseLabel, fieldsPanel.isVisible)
                 block.revalidate()
                 block.repaint()
             }
@@ -694,20 +780,10 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
     }
 
     private fun addErrorStepBlock(snapshot: EntrySnapshot, errorMessage: String, errorTraceback: String?) {
-        val block = object : JPanel() {
-            override fun paintComponent(g: Graphics) {
-                val g2 = g as Graphics2D
-                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-                g2.color = ERROR_BLOCK_BG
-                g2.fillRoundRect(0, 0, width, height, JBUI.scale(8), JBUI.scale(8))
-                g2.color = ERROR_BLOCK_BORDER
-                g2.drawRoundRect(0, 0, width - 1, height - 1, JBUI.scale(8), JBUI.scale(8))
-            }
-        }.apply {
+        recordedActions += RenderAction.ErrorStep(snapshot, errorMessage, errorTraceback)
+        val block = PipelineBlock(BlockKind.ERROR).apply {
             layout = BoxLayout(this, BoxLayout.Y_AXIS)
-            isOpaque = false
-            border = JBUI.Borders.empty(10, 12)
-            alignmentX = Component.LEFT_ALIGNMENT
+            border = JBUI.Borders.empty(10, 12, 10 + extraBottom, 12)
             maximumSize = Dimension(Int.MAX_VALUE, Int.MAX_VALUE)
         }
 
@@ -749,20 +825,10 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
     }
 
     private fun addInitErrorBlock(errorMessage: String, errorTraceback: String?) {
-        val block = object : JPanel() {
-            override fun paintComponent(g: Graphics) {
-                val g2 = g as Graphics2D
-                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-                g2.color = ERROR_BLOCK_BG
-                g2.fillRoundRect(0, 0, width, height, JBUI.scale(8), JBUI.scale(8))
-                g2.color = ERROR_BLOCK_BORDER
-                g2.drawRoundRect(0, 0, width - 1, height - 1, JBUI.scale(8), JBUI.scale(8))
-            }
-        }.apply {
+        recordedActions += RenderAction.InitError(errorMessage, errorTraceback)
+        val block = PipelineBlock(BlockKind.ERROR).apply {
             layout = BoxLayout(this, BoxLayout.Y_AXIS)
-            isOpaque = false
-            border = JBUI.Borders.empty(10, 12)
-            alignmentX = Component.LEFT_ALIGNMENT
+            border = JBUI.Borders.empty(10, 12, 10 + extraBottom, 12)
             maximumSize = Dimension(Int.MAX_VALUE, Int.MAX_VALUE)
         }
 
@@ -791,20 +857,10 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
     }
 
     private fun addTopLevelErrorBlock(errorMessage: String, errorTraceback: String?) {
-        val block = object : JPanel() {
-            override fun paintComponent(g: Graphics) {
-                val g2 = g as Graphics2D
-                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-                g2.color = JBColor(Color(0xFFEBEE), Color(0x3B1B1B))
-                g2.fillRoundRect(0, 0, width, height, JBUI.scale(8), JBUI.scale(8))
-                g2.color = JBColor(Color(0xEF9A9A), Color(0xC62828))
-                g2.drawRoundRect(0, 0, width - 1, height - 1, JBUI.scale(8), JBUI.scale(8))
-            }
-        }.apply {
+        recordedActions += RenderAction.TopLevelError(errorMessage, errorTraceback)
+        val block = PipelineBlock(BlockKind.ERROR).apply {
             layout = BoxLayout(this, BoxLayout.Y_AXIS)
-            isOpaque = false
-            border = JBUI.Borders.empty(12)
-            alignmentX = Component.LEFT_ALIGNMENT
+            border = JBUI.Borders.empty(12, 12, 12 + extraBottom, 12)
         }
 
         block.add(JBLabel(errorMessage).apply {
@@ -838,22 +894,12 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
     }
 
     private fun addSkippedNotice() {
-        val notice = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(6), 0)).apply {
-            isOpaque = false
-            alignmentX = Component.LEFT_ALIGNMENT
-            border = JBUI.Borders.empty(6, 14)
-        }
-        notice.add(JBLabel(AllIcons.General.Warning).apply {
-            border = JBUI.Borders.emptyRight(2)
-        })
-        notice.add(JBLabel("Skipped \u2014 inner dataset pipeline failed").apply {
-            foreground = UIUtil.getInactiveTextColor()
-            font = font.deriveFont(Font.ITALIC)
-        })
-        contentPanel.add(notice)
+        recordedActions += RenderAction.Skipped
+        contentPanel.add(chrome.newSkippedNotice("Skipped \u2014 inner dataset pipeline failed"))
     }
 
     private fun addConnector(label: String?) {
+        recordedActions += RenderAction.Connector(label)
         val connector = JPanel().apply {
             layout = BoxLayout(this, BoxLayout.X_AXIS)
             isOpaque = false
@@ -864,27 +910,13 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
 
         connector.add(Box.createHorizontalStrut(JBUI.scale(24)))
 
-        // Vertical line + arrow
+        // Vertical line + arrow — chrome decides the look.
         connector.add(object : JComponent() {
             override fun getPreferredSize() = Dimension(JBUI.scale(20), JBUI.scale(24))
             override fun getMinimumSize() = preferredSize
             override fun getMaximumSize() = preferredSize
             override fun paintComponent(g: Graphics) {
-                val g2 = g as Graphics2D
-                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-                g2.color = JBColor.border()
-                g2.stroke = BasicStroke(JBUI.scale(2).toFloat())
-                val cx = width / 2
-                // Vertical line
-                g2.drawLine(cx, 0, cx, height - JBUI.scale(6))
-                // Arrowhead
-                val ay = height - JBUI.scale(2)
-                val aw = JBUI.scale(4)
-                g2.fillPolygon(
-                    intArrayOf(cx - aw, cx, cx + aw),
-                    intArrayOf(ay - aw * 2, ay, ay - aw * 2),
-                    3
-                )
+                chrome.paintConnector(g, width, height)
             }
         })
 
@@ -928,21 +960,7 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
         }
         tracePanel.add(scrollable)
 
-        val toggleLabel = JBLabel("Show traceback \u25B8").apply {
-            foreground = UIUtil.getInactiveTextColor()
-            font = font.deriveFont(font.size - 1f)
-            cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-            alignmentX = Component.LEFT_ALIGNMENT
-        }
-        toggleLabel.addMouseListener(object : MouseAdapter() {
-            override fun mouseClicked(e: MouseEvent) {
-                tracePanel.isVisible = !tracePanel.isVisible
-                toggleLabel.text = if (tracePanel.isVisible) "Hide traceback \u25BE" else "Show traceback \u25B8"
-                block.revalidate()
-                block.repaint()
-            }
-        })
-        block.add(toggleLabel)
+        chrome.installTracebackToggle(block, tracePanel)
         block.add(tracePanel)
     }
 
@@ -1120,6 +1138,7 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
         markerMode = null
 
         contentPanel.removeAll()
+        recordedActions.clear()
         contentPanel.revalidate()
         contentPanel.repaint()
 
@@ -1226,18 +1245,6 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
     }
 
     companion object {
-        // Elevated surface for step blocks — white in light theme, slightly lighter in dark
-        private val STEP_BLOCK_BG = JBColor(Color.WHITE, Color(0x3C3F41))
-        private val STEP_BLOCK_BORDER = JBColor(Color(0xD0D0D0), Color(0x555555))
-
-        // Error step blocks
-        private val ERROR_BLOCK_BG = JBColor(Color(0xFFEBEE), Color(0x3B1B1B))
-        private val ERROR_BLOCK_BORDER = JBColor(Color(0xEF9A9A), Color(0xC62828))
-
-        // Cache blocks — teal/cyan
-        private val CACHE_BLOCK_BG = JBColor(Color(0xE0F2F1), Color(0x1B3B36))
-        private val CACHE_BLOCK_BORDER = JBColor(Color(0x80CBC4), Color(0x00897B))
-
         fun computeDiffs(before: EntrySnapshot, after: EntrySnapshot): List<FieldDiff> {
             return computeFieldListDiffs(before.fields, after.fields)
         }
@@ -1305,4 +1312,47 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
             return map
         }
     }
+}
+
+/**
+ * One unit of "rendered visual" emitted into the probe tool window. Recorded
+ * as the probe streams so that on a chrome hot-swap we can rebuild the UI
+ * verbatim under the new chrome — no probe re-run needed.
+ *
+ * Adding a new visual element to the probe just means adding a new entry
+ * here and handling it in [ProbeToolWindowPanel.replay].
+ */
+sealed class RenderAction {
+    data class Dataset(
+        val name: String,
+        val target: String,
+        val node: DatasetNode?,
+    ) : RenderAction()
+
+    data class Cache(val cacheDir: String) : RenderAction()
+
+    data class Step(
+        val snapshot: EntrySnapshot,
+        val diffs: List<FieldDiff>,
+    ) : RenderAction()
+
+    data class ErrorStep(
+        val snapshot: EntrySnapshot,
+        val errorMessage: String,
+        val errorTraceback: String?,
+    ) : RenderAction()
+
+    data class InitError(
+        val errorMessage: String,
+        val errorTraceback: String?,
+    ) : RenderAction()
+
+    data class TopLevelError(
+        val errorMessage: String,
+        val errorTraceback: String?,
+    ) : RenderAction()
+
+    data class Connector(val label: String?) : RenderAction()
+
+    object Skipped : RenderAction()
 }

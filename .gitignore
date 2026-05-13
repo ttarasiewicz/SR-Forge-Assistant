@@ -19,6 +19,9 @@ build/
 # Claude Code
 .claude/
 
+# Local working notes
+PLAN.md
+
 # OS files
 Thumbs.db
 .DS_Store

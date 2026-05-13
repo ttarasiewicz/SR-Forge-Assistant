@@ -8,6 +8,7 @@ import com.intellij.util.ui.UIUtil
 import java.awt.*
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
+import java.awt.geom.RoundRectangle2D
 import javax.swing.*
 
 /**
@@ -21,6 +22,9 @@ private enum class DiffSide { AFTER, BEFORE }
  */
 class FieldDetailPanel(private val diffs: List<FieldDiff>, private val project: Project) : JPanel() {
 
+    /** Chrome bound at construction. Recreated panels get the fresh chrome. */
+    private val chrome: ProbeChrome = ProbeChrome.current
+
     init {
         layout = BoxLayout(this, BoxLayout.Y_AXIS)
         isOpaque = false
@@ -33,29 +37,21 @@ class FieldDetailPanel(private val diffs: List<FieldDiff>, private val project: 
 
     private fun createFieldBlock(diff: FieldDiff): JPanel {
         val field = diff.after ?: diff.before ?: return JPanel()
-        val borderColor = diffBorderColor(diff.status)
-        val bgColor = diffBackground(diff.status)
         val statusIcon = statusIcon(diff.status)
 
-        val block = JPanel().apply {
+        val block = FieldCard(diff.status).apply {
             layout = BoxLayout(this, BoxLayout.Y_AXIS)
-            alignmentX = Component.LEFT_ALIGNMENT
-            maximumSize = Dimension(Int.MAX_VALUE, Int.MAX_VALUE)
-            border = BorderFactory.createCompoundBorder(
-                BorderFactory.createMatteBorder(0, JBUI.scale(3), 0, 0, borderColor),
-                JBUI.Borders.empty(0, 0)
-            )
         }
 
-        val headerPanel = createHeaderPanel(diff, field, statusIcon, bgColor)
-        val bodyPanel = createBodyPanel(diff, field, bgColor)
+        val headerPanel = createHeaderPanel(diff, field, statusIcon, block.legacyHeaderBg)
+        val bodyPanel = createBodyPanel(diff, field, block.legacyChildBg)
 
+        val chevron = headerPanel.getClientProperty("chevronToggle") as JComponent
         headerPanel.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
         headerPanel.addMouseListener(object : MouseAdapter() {
             override fun mouseClicked(e: MouseEvent) {
                 bodyPanel.isVisible = !bodyPanel.isVisible
-                val indicator = headerPanel.getClientProperty("collapseLabel") as? JBLabel
-                indicator?.text = if (bodyPanel.isVisible) "\u25BE" else "\u25B8"
+                chrome.setChevronExpanded(chevron, bodyPanel.isVisible)
                 block.revalidate()
                 block.repaint()
             }
@@ -77,7 +73,7 @@ class FieldDetailPanel(private val diffs: List<FieldDiff>, private val project: 
 
         val panel = JPanel(BorderLayout()).apply {
             maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(26))
-            border = JBUI.Borders.empty(3, 8, 3, 8)
+            border = chrome.fieldHeaderPadding
             if (bgColor != null) {
                 background = bgColor
                 isOpaque = true
@@ -90,12 +86,13 @@ class FieldDetailPanel(private val diffs: List<FieldDiff>, private val project: 
             isOpaque = false
         }
 
-        val collapseLabel = JBLabel("\u25B8").apply {
-            foreground = UIUtil.getInactiveTextColor()
-            font = font.deriveFont(Font.PLAIN, font.size - 1f)
-        }
-        panel.putClientProperty("collapseLabel", collapseLabel)
-        leftPanel.add(collapseLabel)
+        val labelFont = UIUtil.getLabelFont()
+        val chevron = chrome.newChevron(
+            initialExpanded = false,
+            legacyFont = labelFont.deriveFont(Font.PLAIN, labelFont.size - 1f),
+        )
+        panel.putClientProperty("chevronToggle", chevron)
+        leftPanel.add(chevron)
 
         if (statusIcon.isNotEmpty()) {
             leftPanel.add(JBLabel(statusIcon).apply {
@@ -262,10 +259,13 @@ class FieldDetailPanel(private val diffs: List<FieldDiff>, private val project: 
             cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
         }
 
-        val collapseLabel = JBLabel(if (startExpanded) "\u25BE" else "\u25B8").apply {
-            foreground = UIUtil.getInactiveTextColor()
-            font = monoFont.deriveFont(Font.PLAIN, font.size - 1f)
-        }
+        val sectionChevronLegacyFont = monoFont.deriveFont(
+            Font.PLAIN, UIUtil.getLabelFont().size - 1f
+        )
+        val collapseLabel = chrome.newChevron(
+            initialExpanded = startExpanded,
+            legacyFont = sectionChevronLegacyFont,
+        )
         headerPanel.add(collapseLabel)
         headerPanel.add(JBLabel(label).apply {
             font = monoFont.deriveFont(Font.BOLD)
@@ -275,7 +275,7 @@ class FieldDetailPanel(private val diffs: List<FieldDiff>, private val project: 
         headerPanel.addMouseListener(object : MouseAdapter() {
             override fun mouseClicked(e: MouseEvent) {
                 contentPanel.isVisible = !contentPanel.isVisible
-                collapseLabel.text = if (contentPanel.isVisible) "\u25BE" else "\u25B8"
+                chrome.setChevronExpanded(collapseLabel, contentPanel.isVisible)
                 wrapper.revalidate()
                 wrapper.repaint()
             }
@@ -311,17 +311,10 @@ class FieldDetailPanel(private val diffs: List<FieldDiff>, private val project: 
                 DiffSide.BEFORE -> diff.before
             } ?: return JPanel()
 
-            val borderColor = diffBorderColor(diff.status)
             val icon = statusIcon(diff.status)
 
-            val block = JPanel().apply {
+            val block = FieldCard(diff.status).apply {
                 layout = BoxLayout(this, BoxLayout.Y_AXIS)
-                alignmentX = Component.LEFT_ALIGNMENT
-                maximumSize = Dimension(Int.MAX_VALUE, Int.MAX_VALUE)
-                border = BorderFactory.createCompoundBorder(
-                    BorderFactory.createMatteBorder(0, JBUI.scale(3), 0, 0, borderColor),
-                    JBUI.Borders.empty(0, 0)
-                )
             }
 
             val monoFont = Font(Font.MONOSPACED, Font.PLAIN, UIUtil.getFontSize(UIUtil.FontSize.SMALL).toInt())
@@ -335,7 +328,7 @@ class FieldDetailPanel(private val diffs: List<FieldDiff>, private val project: 
 
             val headerPanel = JPanel(BorderLayout()).apply {
                 maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(26))
-                border = JBUI.Borders.empty(3, 8, 3, 8)
+                border = chrome.fieldHeaderPadding
                 isOpaque = false
             }
 
@@ -343,10 +336,13 @@ class FieldDetailPanel(private val diffs: List<FieldDiff>, private val project: 
                 isOpaque = false
             }
 
-            val collapseLabel = JBLabel("\u25B8").apply {
-                foreground = UIUtil.getInactiveTextColor()
-                font = monoFont.deriveFont(Font.PLAIN, font.size - 1f)
-            }
+            val childChevronLegacyFont = monoFont.deriveFont(
+                Font.PLAIN, UIUtil.getLabelFont().size - 1f
+            )
+            val collapseLabel = chrome.newChevron(
+                initialExpanded = false,
+                legacyFont = childChevronLegacyFont,
+            )
             leftPanel.add(collapseLabel)
 
             if (icon.isNotEmpty()) {
@@ -423,7 +419,7 @@ class FieldDetailPanel(private val diffs: List<FieldDiff>, private val project: 
             headerPanel.addMouseListener(object : MouseAdapter() {
                 override fun mouseClicked(e: MouseEvent) {
                     bodyPanel.isVisible = !bodyPanel.isVisible
-                    collapseLabel.text = if (bodyPanel.isVisible) "\u25BE" else "\u25B8"
+                    chrome.setChevronExpanded(collapseLabel, bodyPanel.isVisible)
                     block.revalidate()
                     block.repaint()
                 }
@@ -511,6 +507,129 @@ class FieldDetailPanel(private val diffs: List<FieldDiff>, private val project: 
             bytes < 1024 * 1024 -> "%.1f KB".format(bytes / 1024.0)
             bytes < 1024 * 1024 * 1024 -> "%.1f MB".format(bytes / (1024.0 * 1024))
             else -> "%.2f GB".format(bytes / (1024.0 * 1024 * 1024))
+        }
+    }
+}
+
+/**
+ * Container for one diff row in the field-detail panel. Captures the
+ * current [ProbeChrome] at construction and delegates every visual decision
+ * (border, paint, hover animation, status colours) to it. The chrome
+ * installs/uninstalls per-card state via [addNotify] / [removeNotify], so
+ * timers and listeners are cleaned up automatically when the card is
+ * detached from the tree (e.g. on a chrome hot-swap).
+ *
+ * Callers use [legacyHeaderBg] / [legacyChildBg] to learn whether the
+ * chrome wants header/body panels to paint their own opaque background; in
+ * polished chrome both are null because FieldCard paints the entire card.
+ */
+class FieldCard(val status: FieldDiffStatus) : JPanel() {
+
+    val chrome: ProbeChrome = ProbeChrome.current
+
+    val legacyHeaderBg: Color? = chrome.fieldHeaderLegacyBg(status)
+    val legacyChildBg: Color? = chrome.fieldChildLegacyBg(status)
+
+    init {
+        // isOpaque is left to the chrome (set in installFieldCard) — legacy
+        // wants the panel-default fill (opaque = true), polished paints its
+        // own rounded card on a transparent base (opaque = false).
+        alignmentX = Component.LEFT_ALIGNMENT
+        maximumSize = Dimension(Int.MAX_VALUE, Int.MAX_VALUE)
+    }
+
+    override fun addNotify() {
+        super.addNotify()
+        chrome.installFieldCard(this)
+    }
+
+    override fun removeNotify() {
+        chrome.uninstallFieldCard(this)
+        super.removeNotify()
+    }
+
+    final override fun paintComponent(g: Graphics) {
+        // super first: if isOpaque, fills with the L&F panel default (this is
+        // what legacy chrome relies on for UNCHANGED rows). If not opaque
+        // (polished), super is a no-op and the chrome's custom paint takes over.
+        super.paintComponent(g)
+        chrome.paintFieldCardBackground(this, g)
+    }
+}
+
+/**
+ * Tiny chevron widget rendered by [PolishedProbeChrome]: a smoothly rotating
+ * triangle that animates between "collapsed" (pointing right) and "expanded"
+ * (pointing down) over ~140 ms. Legacy chrome doesn't use this — it returns
+ * a `JBLabel` text glyph instead.
+ */
+class AnimatedChevron : JComponent() {
+
+    var expanded: Boolean = false
+        set(value) {
+            if (field == value) return
+            field = value
+            animateTo(if (value) 1f else 0f)
+        }
+
+    /** 0 = pointing right (collapsed); 1 = pointing down (expanded). */
+    private var rotation: Float = 0f
+    private var rotFrom = 0f
+    private var rotTo = 0f
+    private var animStart = 0L
+    private val timer: Timer = Timer(16) { tick() }
+
+    init {
+        isOpaque = false
+        preferredSize = Dimension(JBUI.scale(12), JBUI.scale(14))
+    }
+
+    override fun getMinimumSize(): Dimension = preferredSize
+    override fun getMaximumSize(): Dimension = preferredSize
+
+    override fun removeNotify() {
+        timer.stop()
+        super.removeNotify()
+    }
+
+    private fun animateTo(target: Float) {
+        rotFrom = rotation
+        rotTo = target
+        animStart = System.currentTimeMillis()
+        if (!timer.isRunning) timer.start()
+    }
+
+    private fun tick() {
+        val t = ((System.currentTimeMillis() - animStart) / 140.0).coerceIn(0.0, 1.0)
+        val x = 1.0 - t
+        val eased = (1.0 - x * x * x).toFloat()
+        rotation = rotFrom + (rotTo - rotFrom) * eased
+        repaint()
+        if (t >= 1.0) {
+            rotation = rotTo
+            timer.stop()
+        }
+    }
+
+    override fun paintComponent(g: Graphics) {
+        val g2 = (g as Graphics2D).create() as Graphics2D
+        try {
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+            g2.color = UIUtil.getInactiveTextColor()
+            val cx = width / 2.0
+            val cy = height / 2.0
+            val angle = Math.PI / 2 * rotation
+            g2.translate(cx, cy)
+            g2.rotate(angle)
+            val s = JBUI.scale(3)
+            val tri = Polygon(
+                intArrayOf(-s, -s, (s * 1.2).toInt()),
+                intArrayOf(-s, s, 0),
+                3,
+            )
+            g2.fillPolygon(tri)
+        } finally {
+            g2.dispose()
         }
     }
 }
