@@ -6,33 +6,65 @@ All notable changes to SR-Forge Assistant are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com).
 
 ## [Unreleased]
+
+## [0.5.1] - 2026-05-14
+
 ### Added
-- New **marker-based dataset picker** replaces the old dialog. Clicking the probe button enters a selection mode in the focused YAML editor: every Dataset `_target:` value gets a pulsing gold dot + dotted underline marker. Hovering one traces the path tree on top of the YAML; clicking one runs the probe from that dataset downward. Non-marker lines fade so the picks stand out, and a styled instruction strip pinned to the editor header lists the available actions (click, scroll, Esc).
-- **Multi-branch path overlay**: hovering a composite dataset (e.g. `ConcatDataset`) shows the chosen branch in bright gold and every alternative branch in a muted darker gold, all converging from the start node. Scrolling the wheel while hovering a composite cycles the active branch in place — the overlay re-renders, and clicking through carries the picked branches into the actual probe run.
-- **Animated trace flows root → outward.** The Bezier spine animates per-depth so the path appears to grow from the start through nested wrappers and out to leaves. Composites fan out simultaneously. Configurable in *Settings → SR-Forge Assistant → Pipeline Probe → YAML path trace duration*.
-- **Live "Running" strip** at the trailing edge of the probe tool window: animated spinner + step name (`Loading X…`, `Entry from X`, `Step N: Resize`, …) plus a thin indeterminate bar. Always sits below the last-rendered block so you can see where the next snapshot will land.
-- Pipeline Probe now supports **composite datasets** like `ConcatDataset`. The parser detects YAML lists of dataset-typed `_target:` entries (e.g. `params.datasets:`) and the Python probe runs exactly one branch per composite at a time, matching what `ConcatDataset.__getitem__` actually does at training time.
-- Each composite dataset in the probe visualization now carries an **inline branch picker** — a small combo box embedded in the dataset's blue block listing every branch (`[0] PatchedDataset`, `[1] LazyDataset`, …). Switching it re-runs the probe with the new branch. Hovering items in the open popup live-previews each branch's path without selecting.
-- **Animated path overlay** drawn on top of the YAML editor: orange Bezier spine grows from the user-selected dataset root down to the deepest leaf actually probed, diamond markers pop in at each ancestor key with an ease-out-back overshoot, and the leaf gets a continuous pulsing halo. Implemented as a `CustomHighlighterRenderer`. The overlay starts animating the moment the probe begins (the leaf is computable from the config), not on completion. Hovering branch options in a composite's dropdown temporarily redraws the trace through that hypothetical branch.
-- **Stop / Clear button** in the probe tool window header. While a probe is running it cancels the Python process within ~100 ms (`ProbeExecutor` now polls the cancellation indicator instead of blocking on `waitFor(TIMEOUT)`). When idle it tears down all panel state — overlay, rendered blocks, `.npy` temp files, and the stored run config — to free memory before launching training.
+
+#### Pipeline Probe — dataset picker
+- Click the probe button to enter an in-editor selection mode where every dataset's `_target:` value is highlighted as a clickable pill. Hover previews the path; click runs the probe from that dataset.
+- Pick mode shows a header strip with the dataset count and `◀ Prev / Next ▶` jump links. Right-scrollbar gold ticks mark every dataset position. If you're scrolled away from any dataset when entering pick mode, the editor automatically jumps to the first one.
+
+#### Pipeline Probe — composite datasets
+- `ConcatDataset` and other YAML-list-style composites are now first-class: the probe runs one branch at a time, matching what `__getitem__` actually does.
+- Each composite block in the visualization carries an inline branch picker — switch branches and re-run with one click. Scrolling the wheel over a composite cycles its active branch.
+- An animated YAML overlay traces the active path through your config, with alternative branches dimmed. Long paths animate at the same per-segment speed as short ones, so the animation feels consistent.
+
+#### Pipeline Probe — running experience
+- A live "Running" strip at the bottom of the tool window shows which step is currently being computed.
+- A Stop button cancels a running probe within ~100 ms. When idle, it clears all probe state (overlays, snapshots, temporary tensor files) to free memory before training.
+- Every block has a **Go to YAML definition** button — click it to jump to the corresponding `_target:` mapping and watch it pulse highlighted for a second.
+
+#### Tensor Visualizer
+- Slider drag now updates the image **live** instead of only on release.
+- Per-dimension and channel inputs are now spinners with ±1 step buttons, mouse-wheel and keyboard arrow stepping, and typed input — essential for scrubbing through large dimensions one index at a time.
+
+#### Editor support
+- Hover docs, go-to-definition, parameter completion, and missing-parameter inspections now work for project-local classes in projects that aren't pip-installed (matches what sr-forge's runtime resolver does).
+- Alt+Enter quick-fixes show a preview of the change before you apply it.
+
 ### Changed
-- `_target:` FQN resolution now mirrors sr-forge's runtime `ConfigResolver` exactly. Replaces the previous heuristic re-export matching (which could find classes sr-forge couldn't actually load) with a filesystem walk + true `from .x import Y` re-export following. Restores hover, go-to-definition, parameter completion, and inspections for project-local classes in projects that aren't pip-installed but live on PyCharm's content/source roots. Project-level result cache, invalidated on any PSI change.
-- The probe script now receives a Kotlin-resolved whitelist of dataset paths so a YAML list-of-`_target:` entries is only treated as composite branches when those entries are actually Dataset subclasses; transforms (`transforms: [...]`) no longer get mistaken for branches.
-- Alt+Enter quick-fixes and the parameter-stub intention now show an automatic preview of the resulting change (migrated to ModCommand APIs)
-- Bumped IntelliJ Platform compile target from 2025.3.3 to 2026.1
-- Migrated startup activities to the new `ProjectActivity` coroutine-based API
-- Build supports reusing a locally installed IDE for `runIde` via the `platformLocalPath` Gradle property (skips the ~1 GB platform download)
+- Dataset picking is now via the in-editor marker mode. The old modal "Configure dataset" dialog is gone — paths are edited directly in the YAML.
+- Long tensor previews in expanded field rows now truncate with an ellipsis and the full text is shown in a tooltip. The visible truncation updates live as you resize the window.
+- The probe tool window content never exceeds the visible width — long content clips/wraps inside each block instead of pushing trailing controls off the right edge.
+- Expanded-field body indent is a single subtle step (used to compound to ~36 px for modified-field rows).
+
 ### Fixed
-- `PipelineProbeAction` now declares `ActionUpdateThread.BGT` instead of falling back to the deprecated `OLD_EDT` default
-- Removed redundant `<applicationService>` registration for `SrForgeHighlightSettings` (already declared via `@Service` annotation)
+- After a `ConcatDataset`, the probe no longer surfaces stale Entry fields from previous probe runs (e.g. a `mask` field disappearing).
+- The dataset picker's clickable highlight no longer collides visually with YAML key syntax colours or warning underlines.
+- Boolean / integer tensors no longer render with grayscale shading when the visualizer window is smaller than the tensor — they stay pixel-exact.
+- Expanded-field body content now anchors to the left consistently, regardless of value length.
+- The probe tool window no longer logs a platform error on first open.
+
 ### Removed
-- Dropped support for PyCharm 2024.2 (raised `pluginSinceBuild` from 242 to 243). 2024.2 runs on JDK 17 and could not load the plugin's JDK 21 bytecode anyway
-- The "Configure dataset" modal dialog is gone. Path overrides went with it — paths are now edited directly in the YAML (which the user does anyway, and removed ~200 lines of plumbing across Kotlin and the Python probe script).
-### Fixed (internal cleanup)
-- Rewrote `ProbeToolWindowFactory` in Java to avoid Kotlin synthetic forwarder methods for `ToolWindowFactory`'s `@ApiStatus.Internal` defaults (eliminates 6 internal-API and 4 deprecated-API verifier warnings per IDE)
-- Replaced experimental `WriteIntentReadAction.run` with `WriteAction.runAndWait` in `ProbeToolWindowPanel` (-4 experimental-API warnings)
-- Cast `PyClass`/`PyNamedParameter` to `PsiNamedElement` for `.name` lookups so the bytecode references the stable interface instead of the experimental `PyAstClass`/`PyAstNamedParameter` methods
-- Replaced the deprecated 4-arg `TextFieldWithBrowseButton.addBrowseFolderListener` with the modern `withTitle`/`withDescription` builder + 2-arg overload (eliminates the last scheduled-for-removal API usage)
+- PyCharm 2024.2 support (JDK 17 incompatibility — the plugin requires JDK 21).
+
+### Developer notes
+
+These describe the internal mechanics; users shouldn't need to read this. Source the corresponding commits / file references for the full picture.
+
+- **Marker-mode dispatchers** use `IdeEventQueue.EventDispatcher` instead of the 253-only `NonLockedEventDispatcher` so the plugin loads on 2024.3 / 2025.1 / 2025.2 (`NoSuchClassError` otherwise). Suppressed deprecation warnings inline.
+- **`_target:` resolution** replaced the heuristic re-export matcher with a filesystem walk + `from .x import Y` re-export follower that mirrors sr-forge's `ConfigResolver` semantics. Project-level cache invalidated on PSI change.
+- **Probe script `_disable_instance_cache`** now recursively descends into `list` / `tuple` / `dict` attributes — previously missed `ConcatDataset._datasets` (a list), so inner `PatchedDataset` / `LazyDataset` kept their pickle caches enabled and surfaced stale `Entry` shapes from prior live runs.
+- **`ProbeChrome.<clinit>`** no longer reads from `SrForgeHighlightSettings.getInstance()`. The platform rejects service access during class init; the `current` field now defaults to `LegacyProbeChrome` and the setting is consulted lazily via `refresh()`.
+- **Pipeline path overlay** moved from a `RangeHighlighter` + `CustomHighlighterRenderer` to a `JComponent` overlay added as a child of `editor.contentComponent`. Swing's paint order (`paintComponent → paintChildren`) puts the overlay strictly above the editor's indent-guide pass. Bezier routing pulls control points to `min(parent.x, child.x) − 24` so the trace never crosses text between markers; partial-curve animation uses De Casteljau subdivision; per-edge timing uses `pathTraceDurationMs × maxDepth` as total wall-clock.
+- **Polished display-mode chrome** (`ProbeChrome` sealed class) was implemented end-to-end with a hot-swap path that records render actions and replays under a new chrome. The polished aesthetic (timeline + numbered nodes) didn't survive review, so `forCurrentMode()` short-circuits to `LegacyProbeChrome` and the dropdown is hidden — code preserved for future iteration.
+- **Tensor Visualizer dtype-aware interpolation**: source `dtype.kind` is captured before the float64 cast in `viz_script.py`; resize uses `cv2.INTER_NEAREST` for `'b'`/`'i'`/`'u'` and `cv2.INTER_AREA` for `'f'`. Kotlin's `ImageViewPanel` mirrors this via an `isDiscreteDtype` field that forces `VALUE_INTERPOLATION_NEAREST_NEIGHBOR` regardless of zoom.
+- **Tensor Visualizer slider live drag**: removed `valueIsAdjusting` guards; `requestVisualization()` now coalesces concurrent requests via a `vizPending` flag (latest control state wins, no backlog of stale renders). `JTextField` replaced with `JSpinner` for ±1 stepping; spinner maxima kept in sync with slider maxima at every adjustment site.
+- **`FieldDetailPanel` BoxLayout fixes**: every Y_AXIS-laid-out container now has all children at `alignmentX = LEFT_ALIGNMENT`. `Box.createVerticalStrut` returns `Filler` with `CENTER` (0.5) by default, which shifted BoxLayout's baseline rightward and pulled LEFT-aligned siblings off-anchor by a content-width-dependent amount. Replaced via a `vstrut(h)` helper.
+- **Dynamic value-row ellipsis**: detail rows changed from `FlowLayout` to `BorderLayout` with the value in `CENTER`. `JLabel.paintComponent` ellipsizes via `SwingUtilities.layoutCompoundLabel` when bounds are narrower than preferred — only triggers if the layout doesn't honour `preferredSize`, which `BorderLayout.CENTER` doesn't.
+- **Tool-window horizontal clipping**: `contentAnchor` implements `Scrollable.getScrollableTracksViewportWidth = true`. Vertical anchoring (the previous `BorderLayout.NORTH` trick) is preserved.
+- **Build / Verifier**: bumped IntelliJ Platform compile target to 2026.1; raised `pluginSinceBuild` to 243; full verifier matrix green for PC/PY 243-253. Migrated startup activities to `ProjectActivity`. `ProbeToolWindowFactory` rewritten in Java to avoid Kotlin synthetic forwarders. Various deprecated/experimental API replacements (full list in commit history).
 
 ## [0.4.4] - 2026-02-25
 ### Changed
