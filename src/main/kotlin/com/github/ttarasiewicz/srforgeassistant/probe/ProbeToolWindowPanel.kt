@@ -66,20 +66,33 @@ class ProbeToolWindowPanel(private val project: Project) : JPanel(BorderLayout()
     }
 
     /**
-     * Anchor wrapper that pins [contentPanel] to the top of the viewport.
+     * Anchor wrapper that pins [contentPanel] to the top of the viewport AND
+     * forces it to track the viewport's width so no horizontal scrollbar
+     * ever appears.
      *
-     * Without this, when the viewport is taller than [contentPanel]'s preferred
-     * height (few transforms, lots of empty space), `ViewportLayout` stretches
-     * the non-`Scrollable` view to fill the viewport. The extra height then
-     * cascades down through every nested `BoxLayout.Y_AXIS` whose children have
-     * `maxSize.height = MAX_VALUE` — blocks balloon, field rows grow taller
-     * than one line, the pipeline visually fills the window.
+     * **Vertical**: `BorderLayout.NORTH` keeps [contentPanel] at its preferred
+     * height — without it, `ViewportLayout` would stretch the non-`Scrollable`
+     * view to fill the viewport. The extra height would cascade through nested
+     * `BoxLayout.Y_AXIS` whose children have `maxSize.height = MAX_VALUE`,
+     * ballooning blocks and growing field rows.
      *
-     * Putting [contentPanel] in a `BorderLayout.NORTH` slot keeps it at exactly
-     * its preferred size; any excess viewport height becomes empty space in
-     * the wrapper's `CENTER` instead of being distributed into the blocks.
+     * **Horizontal**: implementing `Scrollable.getScrollableTracksViewportWidth
+     * = true` makes the viewport pin the view's width to the viewport's, so
+     * long content (e.g. a verbose tensor preview) gets clipped or wrapped
+     * within the visible width instead of pushing block-trailing buttons
+     * ("Visualize", "Go to YAML") off the right edge.
      */
-    private val contentAnchor = JPanel(BorderLayout()).apply {
+    private val contentAnchor: JPanel = object : JPanel(BorderLayout()), Scrollable {
+        override fun getPreferredScrollableViewportSize(): Dimension = preferredSize
+        override fun getScrollableUnitIncrement(
+            visibleRect: Rectangle, orientation: Int, direction: Int,
+        ): Int = JBUI.scale(16)
+        override fun getScrollableBlockIncrement(
+            visibleRect: Rectangle, orientation: Int, direction: Int,
+        ): Int = visibleRect.height
+        override fun getScrollableTracksViewportWidth(): Boolean = true
+        override fun getScrollableTracksViewportHeight(): Boolean = false
+    }.apply {
         isOpaque = false
         add(contentPanel, BorderLayout.NORTH)
     }

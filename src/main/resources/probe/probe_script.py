@@ -286,13 +286,30 @@ def _strip_recache(node):
 
 
 def _disable_instance_cache(dataset):
-    """Disable caching on a live dataset instance and any nested datasets."""
+    """Disable caching on a live dataset instance and any nested datasets.
+
+    Recursively descends into the dataset's own attributes AND into list/
+    tuple/dict containers found among them. ConcatDataset stores its
+    sub-datasets in a `self._datasets` list, so without container recursion
+    we'd leave their caches enabled and the probe would silently read stale
+    pickles from prior live runs (e.g. an Entry shape that's no longer what
+    the current YAML produces).
+    """
     if hasattr(dataset, '_cache_enabled'):
         dataset._cache_enabled = False
     for attr in vars(dataset).values():
-        if (attr is not None and attr is not dataset
-                and hasattr(attr, '_cache_enabled')):
+        if attr is None or attr is dataset:
+            continue
+        if hasattr(attr, '_cache_enabled'):
             _disable_instance_cache(attr)
+        elif isinstance(attr, (list, tuple)):
+            for item in attr:
+                if hasattr(item, '_cache_enabled'):
+                    _disable_instance_cache(item)
+        elif isinstance(attr, dict):
+            for item in attr.values():
+                if hasattr(item, '_cache_enabled'):
+                    _disable_instance_cache(item)
 
 
 def _probe_node(resolver, node, path, branch_choices, dataset_paths, tensor_dir=None):

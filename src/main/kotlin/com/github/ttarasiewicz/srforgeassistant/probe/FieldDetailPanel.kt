@@ -32,11 +32,26 @@ class FieldDetailPanel(private val diffs: List<FieldDiff>, private val project: 
         val (visibleDiffs, hiddenCount) = partitionDiffs(diffs)
         for (diff in visibleDiffs) {
             add(createFieldBlock(diff))
-            add(Box.createVerticalStrut(JBUI.scale(3)))
+            add(vstrut(JBUI.scale(3)))
         }
         if (hiddenCount > 0) {
             add(createShowUnchangedToggle(hiddenCount))
         }
+    }
+
+    /**
+     * Left-aligned vertical strut.
+     *
+     * `Box.createVerticalStrut(h)` returns a Filler whose default
+     * `alignmentX` is `CENTER` (0.5). Mixing CENTER-aligned struts with
+     * LEFT-aligned rows inside a [BoxLayout] Y_AXIS container shifts the
+     * layout's "baseline" rightward — symptom: the LEFT children visibly
+     * drift toward the right, more so as siblings' preferred widths shrink.
+     * Using a uniformly LEFT-aligned strut keeps every child at the same
+     * anchor and prevents the drift.
+     */
+    private fun vstrut(h: Int): Component = Box.createVerticalStrut(h).apply {
+        (this as JComponent).alignmentX = Component.LEFT_ALIGNMENT
     }
 
     /**
@@ -74,7 +89,7 @@ class FieldDetailPanel(private val diffs: List<FieldDiff>, private val project: 
                 var insertAt = toggleIndex
                 for (d in unchanged) {
                     add(createFieldBlock(d), insertAt++)
-                    add(Box.createVerticalStrut(JBUI.scale(3)), insertAt++)
+                    add(vstrut(JBUI.scale(3)), insertAt++)
                 }
                 remove(label)
                 revalidate()
@@ -121,6 +136,7 @@ class FieldDetailPanel(private val diffs: List<FieldDiff>, private val project: 
         val shapeSummary = buildShapeSummary(field)
 
         val panel = JPanel(BorderLayout()).apply {
+            alignmentX = Component.LEFT_ALIGNMENT
             maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(26))
             border = chrome.fieldHeaderPadding
             if (bgColor != null) {
@@ -201,7 +217,8 @@ class FieldDetailPanel(private val diffs: List<FieldDiff>, private val project: 
     private fun createBodyPanel(diff: FieldDiff, field: FieldSnapshot, bgColor: Color?): JPanel {
         val panel = JPanel().apply {
             layout = BoxLayout(this, BoxLayout.Y_AXIS)
-            border = JBUI.Borders.empty(2, 20, 6, 8)
+            alignmentX = Component.LEFT_ALIGNMENT
+            border = JBUI.Borders.empty(2, EXPANDED_BODY_INDENT, 6, 8)
             if (bgColor != null) {
                 background = bgColor
                 isOpaque = true
@@ -227,7 +244,7 @@ class FieldDetailPanel(private val diffs: List<FieldDiff>, private val project: 
                         ))
                     }
                     if (diff.before != null) {
-                        panel.add(Box.createVerticalStrut(JBUI.scale(2)))
+                        panel.add(vstrut(JBUI.scale(2)))
                         panel.add(createCollapsibleSection(
                             "Before:", diff.before, diff.childDiffs, DiffSide.BEFORE, bgColor, startExpanded = false
                         ))
@@ -246,7 +263,7 @@ class FieldDetailPanel(private val diffs: List<FieldDiff>, private val project: 
                 val monoFont = Font(Font.MONOSPACED, Font.PLAIN, UIUtil.getFontSize(UIUtil.FontSize.SMALL).toInt())
                 addSnapshotStats(panel, field, monoFont, UIUtil.getLabelForeground())
                 if (!diff.childDiffs.isNullOrEmpty()) {
-                    panel.add(Box.createVerticalStrut(JBUI.scale(4)))
+                    panel.add(vstrut(JBUI.scale(4)))
                     val childPanel = FieldDetailPanel(diff.childDiffs, project)
                     childPanel.alignmentX = Component.LEFT_ALIGNMENT
                     panel.add(childPanel)
@@ -431,7 +448,13 @@ class FieldDetailPanel(private val diffs: List<FieldDiff>, private val project: 
 
         val contentPanel = JPanel().apply {
             layout = BoxLayout(this, BoxLayout.Y_AXIS)
-            border = JBUI.Borders.emptyLeft(16)
+            alignmentX = Component.LEFT_ALIGNMENT
+            // No extra indent here — the outer body already supplied the
+            // single indent step. Adding another layer of EXPANDED_BODY_INDENT
+            // here would compound: MODIFIED diffs go through bodyPanel +
+            // section.contentPanel and would end up at 2× the indent of
+            // UNCHANGED diffs (which only go through bodyPanel).
+            border = JBUI.Borders.empty()
             if (bgColor != null) {
                 background = bgColor
                 isOpaque = true
@@ -451,7 +474,7 @@ class FieldDetailPanel(private val diffs: List<FieldDiff>, private val project: 
             }
         }
         if (!visibleChildren.isNullOrEmpty()) {
-            contentPanel.add(Box.createVerticalStrut(JBUI.scale(4)))
+            contentPanel.add(vstrut(JBUI.scale(4)))
             val childPanel = SidedChildPanel(visibleChildren, side, bgColor)
             childPanel.alignmentX = Component.LEFT_ALIGNMENT
             contentPanel.add(childPanel)
@@ -507,7 +530,7 @@ class FieldDetailPanel(private val diffs: List<FieldDiff>, private val project: 
 
             for (diff in childDiffs) {
                 add(createChildBlock(diff))
-                add(Box.createVerticalStrut(JBUI.scale(2)))
+                add(vstrut(JBUI.scale(2)))
             }
         }
 
@@ -533,6 +556,7 @@ class FieldDetailPanel(private val diffs: List<FieldDiff>, private val project: 
             val childHint = if (childCount > 0) "  ($childCount elements)" else ""
 
             val headerPanel = JPanel(BorderLayout()).apply {
+                alignmentX = Component.LEFT_ALIGNMENT
                 maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(26))
                 border = chrome.fieldHeaderPadding
                 isOpaque = false
@@ -600,7 +624,8 @@ class FieldDetailPanel(private val diffs: List<FieldDiff>, private val project: 
             // Body
             val bodyPanel = JPanel().apply {
                 layout = BoxLayout(this, BoxLayout.Y_AXIS)
-                border = JBUI.Borders.empty(2, 20, 6, 8)
+                alignmentX = Component.LEFT_ALIGNMENT
+                border = JBUI.Borders.empty(2, EXPANDED_BODY_INDENT, 6, 8)
                 isOpaque = false
                 isVisible = false
             }
@@ -615,7 +640,7 @@ class FieldDetailPanel(private val diffs: List<FieldDiff>, private val project: 
                 }
             }
             if (!nestedChildDiffs.isNullOrEmpty()) {
-                bodyPanel.add(Box.createVerticalStrut(JBUI.scale(4)))
+                bodyPanel.add(vstrut(JBUI.scale(4)))
                 val nestedPanel = SidedChildPanel(nestedChildDiffs, side, bgColor)
                 nestedPanel.alignmentX = Component.LEFT_ALIGNMENT
                 bodyPanel.add(nestedPanel)
@@ -653,14 +678,48 @@ class FieldDetailPanel(private val diffs: List<FieldDiff>, private val project: 
     }
 
     private fun addDetailRow(panel: JPanel, label: String, value: String, font: Font, color: Color) {
-        val row = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(6), 0)).apply {
+        // BorderLayout (not FlowLayout): the value goes in CENTER, which
+        // absorbs whatever width is left after the label. JLabel auto-
+        // ellipsizes its text via SwingUtilities.layoutCompoundLabel when
+        // its bounds are narrower than its natural text width, so the value
+        // dynamically truncates to fit the current window width and ends
+        // with "…" instead of disappearing into a wrapped line that the row's
+        // height cap would have clipped away.
+        val row = JPanel(BorderLayout(JBUI.scale(6), 0)).apply {
             isOpaque = false
             alignmentX = Component.LEFT_ALIGNMENT
             maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(18))
         }
-        row.add(JBLabel(label).apply { this.font = font.deriveFont(Font.BOLD); foreground = color })
-        row.add(JBLabel(value).apply { this.font = font; foreground = color })
+        row.add(
+            JBLabel(label).apply { this.font = font.deriveFont(Font.BOLD); foreground = color },
+            BorderLayout.WEST,
+        )
+
+        // The 180-char cap is still applied as an upper bound (so the tooltip
+        // doesn't end up holding kilobytes for a tensor preview), but the
+        // *visible* truncation is now driven by paint-time ellipsis based on
+        // the actual row width — it updates live with window resize.
+        val displayValue = truncateForDetailRow(value)
+        val valueLabel = JBLabel(displayValue).apply {
+            this.font = font
+            foreground = color
+            if (displayValue != value) toolTipText = value
+            // Allow JLabel to shrink below its preferred width so its
+            // internal layoutCompoundLabel can ellipsize.
+            minimumSize = Dimension(0, JBUI.scale(18))
+        }
+        row.add(valueLabel, BorderLayout.CENTER)
         panel.add(row)
+    }
+
+    private fun truncateForDetailRow(value: String): String {
+        val firstLine = value.substringBefore('\n')
+        val truncatedNewline = firstLine.length < value.length
+        return if (firstLine.length > DETAIL_ROW_MAX_CHARS) {
+            firstLine.take(DETAIL_ROW_MAX_CHARS) + "…"
+        } else if (truncatedNewline) {
+            "$firstLine…"
+        } else value
     }
 
     private fun buildShapeSummary(field: FieldSnapshot): String {
@@ -671,6 +730,19 @@ class FieldDetailPanel(private val diffs: List<FieldDiff>, private val project: 
     }
 
     companion object {
+        /** Max characters of a single "value" preview shown inline before
+         *  it gets truncated with "…" and the full text moves to a tooltip.
+         *  Tuned so a typical tool-window width still fits the row plus its
+         *  trailing controls (e.g. the Visualize button) without forcing a
+         *  horizontal scroll. */
+        private const val DETAIL_ROW_MAX_CHARS = 180
+
+        /** Subtle left indent for an expanded field's body (stats + nested
+         *  rows). Kept small on purpose — deeply nested diffs compound this
+         *  inset multiple times, so a large value would push deep rows far
+         *  off the left edge. */
+        private const val EXPANDED_BODY_INDENT = 6
+
         private val BORDER_ADDED = JBColor(Color(0x4CAF50), Color(0x388E3C))
         private val BORDER_REMOVED = JBColor(Color(0xF44336), Color(0xD32F2F))
         private val BORDER_MODIFIED = JBColor(Color(0xFFC107), Color(0xFFA000))

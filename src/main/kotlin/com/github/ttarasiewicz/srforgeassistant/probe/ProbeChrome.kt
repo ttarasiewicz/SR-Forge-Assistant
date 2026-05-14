@@ -225,9 +225,18 @@ sealed class ProbeChrome {
     abstract val stepLeftHeaderHgap: Int
 
     companion object {
-        /** Currently-active chrome. Mutated only by [ProbeToolWindowPanel] on settings change. */
+        /**
+         * Currently-active chrome. Mutated only by [ProbeToolWindowPanel] on
+         * settings change.
+         *
+         * Initialised to [LegacyProbeChrome] *without* consulting any
+         * IntelliJ application service — class-initialisers are forbidden
+         * from doing that (the platform logs an error). The live setting is
+         * read by [refresh] from the panel's init block, well after
+         * services are available.
+         */
         @Volatile
-        var current: ProbeChrome = forCurrentMode()
+        var current: ProbeChrome = LegacyProbeChrome
             private set
 
         /**
