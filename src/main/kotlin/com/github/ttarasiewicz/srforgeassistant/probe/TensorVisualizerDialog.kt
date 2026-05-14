@@ -69,6 +69,23 @@ class TensorVisualizerDialog(
     private val originalShape: List<Int> = parseShape(field.shape)
     private val dimCount = originalShape.size
 
+    /**
+     * Whether the source tensor's dtype is non-continuous (bool / integer).
+     * Used to force `NEAREST_NEIGHBOR` interpolation during downscale so a
+     * 0/1 bool mask (or a categorical int label tensor) renders as crisp
+     * two-tone / step values instead of a grayscale gradient from bilinear
+     * averaging between neighbouring pixels.
+     */
+    private val isDiscreteDtype: Boolean = run {
+        val d = field.dtype?.lowercase() ?: return@run false
+        when {
+            "float" in d -> false                  // float, float16, float32, float64, bfloat16
+            "bool" in d -> true
+            "int" in d -> true                     // int8/16/32/64 and uint8/16/32/64
+            else -> false
+        }
+    }
+
     // ── Dim role rows ──────────────────────────────────────────
     private val dimRows = mutableListOf<DimRow>()
     private var updatingRoles = false
@@ -962,9 +979,14 @@ class TensorVisualizerDialog(
             super.paintComponent(g)
             val img = image ?: return
             val g2 = g as Graphics2D
+            // For continuous (float) tensors we keep bilinear when downscaling
+            // — it produces a smoother view of natural images. For discrete
+            // dtypes (bool, int) bilinear averages neighbouring pixel values
+            // and turns a binary mask into a grayscale gradient, so we force
+            // nearest-neighbour and preserve pixel-exact values at every zoom.
             g2.setRenderingHint(
                 RenderingHints.KEY_INTERPOLATION,
-                if (zoom < 1.0) RenderingHints.VALUE_INTERPOLATION_BILINEAR
+                if (zoom < 1.0 && !isDiscreteDtype) RenderingHints.VALUE_INTERPOLATION_BILINEAR
                 else RenderingHints.VALUE_INTERPOLATION_NEAREST_NEIGHBOR
             )
 

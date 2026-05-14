@@ -33,7 +33,14 @@ def main():
 
 def render(config):
     npy_path = config['npyPath']
-    data = np.load(npy_path).astype(np.float64)
+    raw_arr = np.load(npy_path)
+    # Capture the *source* dtype kind before the float64 cast so we can
+    # pick an interpolation that preserves discrete values (bool, int) on
+    # downscale. numpy kind codes: 'b' = bool, 'i' = signed int,
+    # 'u' = unsigned int, 'f' = float. Anything that isn't 'f' is treated
+    # as discrete and gets cv2.INTER_NEAREST in Step 6.
+    is_discrete_dtype = raw_arr.dtype.kind in ('b', 'i', 'u')
+    data = raw_arr.astype(np.float64)
 
     dim_roles = config.get('dimRoles', [])
     channel_mode = config.get('channelMode', 'rgb')
@@ -231,8 +238,13 @@ def render(config):
         scale = output_width / w
         new_h = max(1, int(h * scale))
         import cv2
+        # INTER_AREA averages source pixels — fine for natural float images
+        # but it would turn a 0/255 bool mask into mid-grays. Force
+        # INTER_NEAREST for discrete dtypes so the downscale preserves
+        # exact pixel values.
+        resize_interp = cv2.INTER_NEAREST if is_discrete_dtype else cv2.INTER_AREA
         display = cv2.resize(display, (output_width, new_h),
-                             interpolation=cv2.INTER_AREA)
+                             interpolation=resize_interp)
 
     # Step 7: Encode to PNG base64
     from PIL import Image
