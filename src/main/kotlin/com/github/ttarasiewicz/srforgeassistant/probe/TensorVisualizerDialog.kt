@@ -44,6 +44,15 @@ class TensorVisualizerDialog(
     private var currentPixelFormat: String = "rgb"
     private var isLoading = false
 
+    /**
+     * Set by [requestVisualization] when called while a render is already in
+     * flight. The completion handler checks this and kicks off another
+     * render so the user sees an updated image with the *latest* slider /
+     * spinner values, not a stale snapshot. Coalesces fast drag input into
+     * a serial chain of renders rather than a queue or freeze.
+     */
+    private var vizPending = false
+
     // Raw float pixel data for hover inspection (H×W×C float32)
     private var rawPixels: FloatArray? = null
     private var rawPixelH = 0
@@ -60,6 +69,23 @@ class TensorVisualizerDialog(
     private val originalShape: List<Int> = parseShape(field.shape)
     private val dimCount = originalShape.size
 
+    /**
+     * Whether the source tensor's dtype is non-continuous (bool / integer).
+     * Used to force `NEAREST_NEIGHBOR` interpolation during downscale so a
+     * 0/1 bool mask (or a categorical int label tensor) renders as crisp
+     * two-tone / step values instead of a grayscale gradient from bilinear
+     * averaging between neighbouring pixels.
+     */
+    private val isDiscreteDtype: Boolean = run {
+        val d = field.dtype?.lowercase() ?: return@run false
+        when {
+            "float" in d -> false                  // float, float16, float32, float64, bfloat16
+            "bool" in d -> true
+            "int" in d -> true                     // int8/16/32/64 and uint8/16/32/64
+            else -> false
+        }
+    }
+
     // ── Dim role rows ──────────────────────────────────────────
     private val dimRows = mutableListOf<DimRow>()
     private var updatingRoles = false
@@ -69,7 +95,7 @@ class TensorVisualizerDialog(
         val dimSize: Int,
         val roleCombo: ComboBox<String>,
         val slider: JSlider,
-        val valueField: JTextField,
+        val valueSpinner: JSpinner,
         val rowPanel: JPanel
     )
 
@@ -92,8 +118,14 @@ class TensorVisualizerDialog(
     private val channelSlider = JSlider(0, 0, 0).apply {
         preferredSize = Dimension(JBUI.scale(120), preferredSize.height)
     }
-    private val channelValueField = JTextField("0", 4).apply {
-        horizontalAlignment = JTextField.CENTER
+    /**
+     * Channel-index spinner — paired with [channelSlider]. JSpinner over a
+     * JTextField gives the user ±1 step buttons, mouse-wheel and arrow-key
+     * stepping; essential for tensors where a few-pixel slider drag would
+     * otherwise skip multiple channels.
+     */
+    private val channelValueSpinner = JSpinner(SpinnerNumberModel(0, 0, 0, 1)).apply {
+        preferredSize = Dimension(JBUI.scale(64), preferredSize.height)
     }
     private val claheClipSpinner = JSpinner(SpinnerNumberModel(2.0, 0.1, 100.0, 0.5))
     private val claheTileSpinner = JSpinner(SpinnerNumberModel(8, 1, 128, 1))
@@ -255,7 +287,7 @@ class TensorVisualizerDialog(
         singleChannelRow.add(JBLabel("C reduce:"))
         singleChannelRow.add(channelReduceCombo)
         singleChannelRow.add(channelSlider)
-        singleChannelRow.add(channelValueField)
+        singleChannelRow.add(channelValueSpinner)
         controlsPanel.add(singleChannelRow)
 
         // Custom RGB channel mapping row
@@ -341,24 +373,23 @@ class TensorVisualizerDialog(
         channelReduceCombo.addActionListener {
             val isIndex = channelReduceCombo.selectedItem == "Index"
             channelSlider.isEnabled = isIndex
-            channelValueField.isEnabled = isIndex
+            channelValueSpinner.isEnabled = isIndex
             refreshAction()
         }
         var channelSyncing = false
         channelSlider.addChangeListener {
             if (!channelSyncing) {
                 channelSyncing = true
-                channelValueField.text = channelSlider.value.toString()
+                channelValueSpinner.value = channelSlider.value
                 channelSyncing = false
-                if (!channelSlider.valueIsAdjusting) refreshAction()
+                refreshAction()
             }
         }
-        channelValueField.addActionListener {
+        channelValueSpinner.addChangeListener {
             if (!channelSyncing) {
                 channelSyncing = true
-                val v = (channelValueField.text.toIntOrNull() ?: 0).coerceIn(0, channelSlider.maximum)
+                val v = (channelValueSpinner.value as Int).coerceIn(0, channelSlider.maximum)
                 channelSlider.value = v
-                channelValueField.text = v.toString()
                 channelSyncing = false
                 refreshAction()
             }
@@ -371,14 +402,15 @@ class TensorVisualizerDialog(
         customMinField.addActionListener { refreshAction() }
         customMaxField.addActionListener { refreshAction() }
 
-        // Bins slider ↔ spinner sync
+        // Bins slider ↔ spinner sync — live updates during drag, coalesced
+        // by [requestVisualization].
         var binsUpdating = false
         binsSlider.addChangeListener {
             if (!binsUpdating) {
                 binsUpdating = true
                 binsSpinner.value = binsSlider.value
                 binsUpdating = false
-                if (!binsSlider.valueIsAdjusting) refreshAction()
+                refreshAction()
             }
         }
         binsSpinner.addChangeListener {
@@ -442,8 +474,11 @@ class TensorVisualizerDialog(
         val slider = JSlider(0, maxIdx, 0).apply {
             preferredSize = Dimension(JBUI.scale(120), preferredSize.height)
         }
-        val valueField = JTextField("0", 4).apply {
-            horizontalAlignment = JTextField.CENTER
+        // JSpinner instead of JTextField: gives ±1 arrow buttons (essential
+        // for large dims where one pixel of slider drag jumps many indices),
+        // mouse-wheel stepping, typed input, and keyboard Up/Down/PageUp/Down.
+        val valueSpinner = JSpinner(SpinnerNumberModel(0, 0, maxIdx, 1)).apply {
+            preferredSize = Dimension(JBUI.scale(64), preferredSize.height)
         }
 
         val rowPanel = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(6), 0)).apply {
@@ -452,9 +487,9 @@ class TensorVisualizerDialog(
         rowPanel.add(JBLabel("Dim $dimIndex [$dimSize]:"))
         rowPanel.add(roleCombo)
         rowPanel.add(slider)
-        rowPanel.add(valueField)
+        rowPanel.add(valueSpinner)
 
-        val dimRow = DimRow(dimIndex, dimSize, roleCombo, slider, valueField, rowPanel)
+        val dimRow = DimRow(dimIndex, dimSize, roleCombo, slider, valueSpinner, rowPanel)
 
         // Role change listener
         roleCombo.addActionListener {
@@ -463,22 +498,23 @@ class TensorVisualizerDialog(
             }
         }
 
-        // Slider ↔ value field sync
+        // Slider ↔ spinner two-way binding. No `valueIsAdjusting` guard —
+        // live drag triggers visualization on every frame; [requestVisualization]
+        // itself coalesces concurrent requests so the user sees the latest
+        // value rendered as fast as the script can compute it.
         var syncing = false
         slider.addChangeListener {
             if (!syncing) {
                 syncing = true
-                valueField.text = slider.value.toString()
+                valueSpinner.value = slider.value
                 syncing = false
-                if (!slider.valueIsAdjusting) requestVisualization()
+                requestVisualization()
             }
         }
-        valueField.addActionListener {
+        valueSpinner.addChangeListener {
             if (!syncing) {
                 syncing = true
-                val v = (valueField.text.toIntOrNull() ?: 0).coerceIn(0, maxIdx)
-                slider.value = v
-                valueField.text = v.toString()
+                slider.value = (valueSpinner.value as Int).coerceIn(0, maxIdx)
                 syncing = false
                 requestVisualization()
             }
@@ -511,7 +547,7 @@ class TensorVisualizerDialog(
         val role = row.roleCombo.selectedItem as String
         val showSlider = (role == "Index")
         row.slider.isVisible = showSlider
-        row.valueField.isVisible = showSlider
+        row.valueSpinner.isVisible = showSlider
     }
 
     // ── Channel Controls Visibility ────────────────────────────
@@ -544,6 +580,7 @@ class TensorVisualizerDialog(
         if (hasC) {
             val maxIdx = maxOf(getChannelDimSize() - 1, 0)
             channelSlider.maximum = maxIdx
+            (channelValueSpinner.model as SpinnerNumberModel).maximum = maxIdx as Comparable<Int>
             (customRSpinner.model as SpinnerNumberModel).maximum = maxIdx as Comparable<Int>
             (customGSpinner.model as SpinnerNumberModel).maximum = maxIdx as Comparable<Int>
             (customBSpinner.model as SpinnerNumberModel).maximum = maxIdx as Comparable<Int>
@@ -569,8 +606,17 @@ class TensorVisualizerDialog(
     // ── Visualization Request ──────────────────────────────────
 
     private fun requestVisualization() {
-        if (isLoading) return
+        // Coalesce concurrent re-render requests: if one is already running,
+        // remember that the user moved a slider/spinner and start a fresh
+        // render with the *current* values when the running one completes.
+        // This is what makes live slider drag feel snappy without queuing
+        // up a deep backlog of stale renders.
+        if (isLoading) {
+            vizPending = true
+            return
+        }
         isLoading = true
+        vizPending = false
         pixelInfoLabel.text = "Rendering..."
 
         val config = buildVizConfig()
@@ -580,6 +626,7 @@ class TensorVisualizerDialog(
             SwingUtilities.invokeLater {
                 isLoading = false
                 applyVizResult(result)
+                if (vizPending) requestVisualization()
             }
         }.start()
     }
@@ -775,6 +822,7 @@ class TensorVisualizerDialog(
         if (totalChannels != null && totalChannels > 0) {
             val maxIdx = totalChannels - 1
             channelSlider.maximum = maxIdx
+            (channelValueSpinner.model as SpinnerNumberModel).maximum = maxIdx as Comparable<Int>
             (customRSpinner.model as SpinnerNumberModel).maximum = maxIdx as Comparable<Int>
             (customGSpinner.model as SpinnerNumberModel).maximum = maxIdx as Comparable<Int>
             (customBSpinner.model as SpinnerNumberModel).maximum = maxIdx as Comparable<Int>
@@ -931,9 +979,14 @@ class TensorVisualizerDialog(
             super.paintComponent(g)
             val img = image ?: return
             val g2 = g as Graphics2D
+            // For continuous (float) tensors we keep bilinear when downscaling
+            // — it produces a smoother view of natural images. For discrete
+            // dtypes (bool, int) bilinear averages neighbouring pixel values
+            // and turns a binary mask into a grayscale gradient, so we force
+            // nearest-neighbour and preserve pixel-exact values at every zoom.
             g2.setRenderingHint(
                 RenderingHints.KEY_INTERPOLATION,
-                if (zoom < 1.0) RenderingHints.VALUE_INTERPOLATION_BILINEAR
+                if (zoom < 1.0 && !isDiscreteDtype) RenderingHints.VALUE_INTERPOLATION_BILINEAR
                 else RenderingHints.VALUE_INTERPOLATION_NEAREST_NEIGHBOR
             )
 

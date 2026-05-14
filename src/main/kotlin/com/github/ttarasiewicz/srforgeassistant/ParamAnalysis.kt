@@ -1,8 +1,16 @@
 package com.github.ttarasiewicz.srforgeassistant
 
+import com.intellij.psi.PsiNamedElement
 import com.intellij.psi.util.PsiTreeUtil
 import com.jetbrains.python.psi.*
 import com.jetbrains.python.psi.types.TypeEvalContext
+
+/**
+ * Resolves to `PsiNamedElement.getName()` (stable) instead of the experimental
+ * `PyAstNamedParameter.getName()` that Kotlin would otherwise pick. Lets the
+ * plugin verifier report fewer experimental API uses without changing behavior.
+ */
+private val PyNamedParameter.stableName: String? get() = (this as PsiNamedElement).name
 
 data class ParamInfo(
     val name: String,
@@ -53,20 +61,20 @@ fun buildPropagatedParams(cls: PyClass): LinkedHashMap<PyClass, LinkedHashMap<St
 
         if (bag.passAll) {
             for (p in parentNamedParams) {
-                val name = p.name ?: continue
+                val name = p.stableName ?: continue
                 if (seenNames.add(name)) targetSection[name] = p.toParamInfo()
             }
         } else if (bag.names.isNotEmpty()) {
             val needed = bag.names
             for (p in parentNamedParams) {
-                val name = p.name ?: continue
+                val name = p.stableName ?: continue
                 if (name in needed && seenNames.add(name)) targetSection[name] = p.toParamInfo()
             }
         } else {
             break
         }
 
-        val consumed = parentNamedParams.mapNotNull { it.name }.toSet()
+        val consumed = parentNamedParams.mapNotNull { it.stableName }.toSet()
         val parentForward = analyzeSuperForwarding(parentInit)
         val remainingNames = (bag.names - consumed) + parentForward.names
         bag = ForwardBag(bag.passAll && parentForward.passAll, remainingNames)
@@ -134,7 +142,7 @@ fun buildFunctionParams(func: PyFunction): LinkedHashMap<String, ParamInfo>? {
 
 /** Convert a [PyNamedParameter] to [ParamInfo] using annotation/default from code text. */
 fun PyNamedParameter.toParamInfo(): ParamInfo {
-    val name = this.name ?: "<param>"
+    val name = this.stableName ?: "<param>"
     val raw = this.text.trim()
     val colonIdx = raw.indexOf(':')
     val eqIdx = raw.indexOf('=')

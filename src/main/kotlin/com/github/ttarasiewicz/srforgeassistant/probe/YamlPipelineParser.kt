@@ -158,8 +158,11 @@ object YamlPipelineParser {
             ?.firstOrNull { it.keyText == "cache_dir" }
             ?.let { (it.value as? YAMLScalar)?.textValue }
 
-        // Find wrapped dataset inside params
+        // Find wrapped dataset inside params (single-child wrappers like PatchedDataset)
         val wrappedDataset = findWrappedDataset(paramsMapping, path, text, project)
+
+        // Find branches inside params (multi-child composites like ConcatDataset)
+        val (branches, branchesKey) = findDatasetBranches(paramsMapping, path, text, project)
 
         // Find transforms
         val transforms = findTransforms(mapping, paramsMapping, text)
@@ -171,6 +174,8 @@ object YamlPipelineParser {
             params = params,
             transforms = transforms,
             wrappedDataset = wrappedDataset,
+            branches = branches,
+            branchesParamKey = branchesKey,
             dataRoot = dataRoot,
             cacheDir = cacheDir,
             yamlOffset = mapping.textOffset
@@ -178,8 +183,9 @@ object YamlPipelineParser {
     }
 
     /**
-     * Detect wrapped datasets: scan params for any value that is itself
+     * Detect a single wrapped dataset: scan params for any value that is itself
      * a mapping containing _target: pointing to a Dataset subclass.
+     * Returns the first one found.
      */
     private fun findWrappedDataset(
         paramsMapping: YAMLMapping?,
@@ -198,6 +204,40 @@ object YamlPipelineParser {
             }
         }
         return null
+    }
+
+    /**
+     * Detect branch datasets: scan params for a sequence value whose items are
+     * mappings containing _target: pointing to Dataset subclasses (e.g. the
+     * `datasets:` list under ConcatDataset.params). Returns the first matching
+     * sequence's parsed items plus the param key under which they were found.
+     */
+    private fun findDatasetBranches(
+        paramsMapping: YAMLMapping?,
+        parentPath: String,
+        text: String,
+        project: Project
+    ): Pair<List<DatasetNode>, String?> {
+        if (paramsMapping == null) return emptyList<DatasetNode>() to null
+
+        for (kv in paramsMapping.keyValues) {
+            val seq = kv.value as? YAMLSequence ?: continue
+            val items = seq.items.mapNotNull { it.value as? YAMLMapping }
+            if (items.isEmpty()) continue
+            // All items must have _target: resolving to a Dataset to count as branches
+            val datasetItems = items.filter { item ->
+                val tgt = item.keyValues.firstOrNull { it.keyText == "_target" }
+                val fqn = (tgt?.value as? YAMLScalar)?.textValue?.trim()
+                fqn != null && isDatasetTarget(fqn, project)
+            }
+            if (datasetItems.isEmpty() || datasetItems.size != items.size) continue
+
+            val parsed = datasetItems.mapIndexedNotNull { i, item ->
+                parseDatasetNode("$parentPath.params.${kv.keyText}[$i]", item, text, project)
+            }
+            if (parsed.isNotEmpty()) return parsed to kv.keyText
+        }
+        return emptyList<DatasetNode>() to null
     }
 
     /**

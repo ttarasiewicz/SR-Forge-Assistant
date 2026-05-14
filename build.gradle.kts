@@ -21,8 +21,13 @@ kotlin {
 
 dependencies {
     intellijPlatform {
-        val ver = providers.gradleProperty("platformVersion").get()
-        pycharm(ver) { useInstaller = false }
+        val localPath = providers.gradleProperty("platformLocalPath").orNull
+        if (localPath != null) {
+            local(file(localPath))
+        } else {
+            val ver = providers.gradleProperty("platformVersion").get()
+            pycharm(ver) { useInstaller = false }
+        }
 
         bundledPlugin("org.jetbrains.plugins.yaml")
         bundledPlugin("PythonCore")
@@ -64,13 +69,11 @@ intellijPlatform {
     pluginVerification {
         ides {
             // PyCharm Professional
-            ide("PY", "2024.2.6")
             ide("PY", "2024.3.6")
             ide("PY", "2025.1.6")
             ide("PY", "2025.2.6")
             ide("PY", "2025.3.3")
             // PyCharm Community (merged into Professional after 2025.3)
-            ide("PC", "2024.2.6")
             ide("PC", "2024.3.6")
             ide("PC", "2025.1.6")
             ide("PC", "2025.2.6")

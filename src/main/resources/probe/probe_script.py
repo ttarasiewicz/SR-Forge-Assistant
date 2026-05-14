@@ -218,35 +218,39 @@ def _snapshot_entry(entry, label, step_index, tensor_dir=None):
 
 # ── Probe logic ─────────────────────────────────────────────────────
 
-def _apply_overrides(node, overrides):
-    """Apply path overrides to 'root' params recursively."""
-    from omegaconf import DictConfig, open_dict
-    if not overrides:
-        return
-    if isinstance(node, DictConfig):
-        with open_dict(node):
-            if 'params' in node and node.params is not None:
-                if 'root' in node.params:
-                    original = str(node.params.root)
-                    if original in overrides:
-                        node.params.root = overrides[original]
-                for k in node.params:
-                    child = node.params[k]
-                    if isinstance(child, DictConfig) and '_target' in child:
-                        _apply_overrides(child, overrides)
+_PATH_PART_RE = re.compile(r'([^.\[]+)(?:\[(\d+)\])?')
 
 
-def _probe_dataset(cfg, dataset_path, path_overrides, tensor_dir=None):
+def _navigate(cfg, path):
+    """Walk an OmegaConf config by a dotted path that may carry [N] indices.
+
+    Examples of paths the plugin produces:
+        dataset.training
+        dataset.training.params.dataset
+        dataset.training.params.datasets[0]
+        dataset.training.params.datasets[0].params.dataset
+    """
+    node = cfg
+    for part in path.split('.'):
+        if not part:
+            continue
+        m = _PATH_PART_RE.fullmatch(part)
+        if not m:
+            raise ValueError(f"Unparseable path segment: {part!r} in {path!r}")
+        key, idx = m.group(1), m.group(2)
+        node = node[key]
+        if idx is not None:
+            node = node[int(idx)]
+    return node
+
+
+def _probe_dataset(cfg, dataset_path, branch_choices,
+                   dataset_paths, tensor_dir=None):
     """Probe a dataset using SR-Forge's ConfigResolver for instantiation."""
     from omegaconf import DictConfig
 
     # Navigate to the dataset config node
-    node = cfg
-    for part in dataset_path.split('.'):
-        node = node[part]
-
-    # Apply path overrides
-    _apply_overrides(node, path_overrides)
+    node = _navigate(cfg, dataset_path)
 
     # Import ConfigResolver early — this registers the ${ref:...} OmegaConf
     # resolver, which is needed before any config value access.
@@ -257,12 +261,14 @@ def _probe_dataset(cfg, dataset_path, path_overrides, tensor_dir=None):
 
     resolver = ConfigResolver(cfg)
 
-    _probe_node(resolver, node, dataset_path, tensor_dir=tensor_dir)
+    _probe_node(resolver, node, dataset_path, branch_choices, dataset_paths,
+                tensor_dir=tensor_dir)
 
 
 def _strip_recache(node):
-    """Set recache=False on all dataset configs to prevent shutil.rmtree during construction."""
-    from omegaconf import DictConfig, open_dict
+    """Set recache=False on all dataset configs to prevent shutil.rmtree during
+    construction (recurses through single-child wrappers and composite lists)."""
+    from omegaconf import DictConfig, ListConfig, open_dict
     if not isinstance(node, DictConfig):
         return
     with open_dict(node):
@@ -273,41 +279,97 @@ def _strip_recache(node):
                 child = node.params[k]
                 if isinstance(child, DictConfig) and '_target' in child:
                     _strip_recache(child)
+                elif isinstance(child, ListConfig):
+                    for item in child:
+                        if isinstance(item, DictConfig) and '_target' in item:
+                            _strip_recache(item)
 
 
 def _disable_instance_cache(dataset):
-    """Disable caching on a live dataset instance and any nested datasets."""
+    """Disable caching on a live dataset instance and any nested datasets.
+
+    Recursively descends into the dataset's own attributes AND into list/
+    tuple/dict containers found among them. ConcatDataset stores its
+    sub-datasets in a `self._datasets` list, so without container recursion
+    we'd leave their caches enabled and the probe would silently read stale
+    pickles from prior live runs (e.g. an Entry shape that's no longer what
+    the current YAML produces).
+    """
     if hasattr(dataset, '_cache_enabled'):
         dataset._cache_enabled = False
     for attr in vars(dataset).values():
-        if (attr is not None and attr is not dataset
-                and hasattr(attr, '_cache_enabled')):
+        if attr is None or attr is dataset:
+            continue
+        if hasattr(attr, '_cache_enabled'):
             _disable_instance_cache(attr)
+        elif isinstance(attr, (list, tuple)):
+            for item in attr:
+                if hasattr(item, '_cache_enabled'):
+                    _disable_instance_cache(item)
+        elif isinstance(attr, dict):
+            for item in attr.values():
+                if hasattr(item, '_cache_enabled'):
+                    _disable_instance_cache(item)
 
 
-def _probe_node(resolver, node, path, tensor_dir=None):
+def _probe_node(resolver, node, path, branch_choices, dataset_paths, tensor_dir=None):
     """Recursively probe a dataset node and its transforms, emitting events.
 
     Strategy: let ConfigResolver instantiate the dataset fully (it handles all
     reference resolution — {ref:...}, %{...}, inline configs). Then grab the
     live _transforms from the instance, clear them, and apply one by one.
 
+    For composite datasets (e.g. ``ConcatDataset`` with a list of inner
+    datasets in ``params.datasets``), recurse into the single branch the user
+    picked in the selector dialog (``branch_choices``). Default to index 0
+    when the user didn't supply a choice for this composite.
+
+    Recursion is gated by ``dataset_paths`` — a whitelist of YAML-config paths
+    that the Kotlin parser confirmed to be Dataset subclasses. Without this
+    gate, lists of transforms (which also have ``_target:``) would be
+    misidentified as composite-dataset branches.
+
     Returns True if any error occurred, False otherwise.
     """
-    from omegaconf import DictConfig
+    from omegaconf import DictConfig, ListConfig
 
     inner_had_errors = False
 
-    # Identify wrapped datasets in params for separate step-by-step probing
+    # Identify wrapped datasets in params for separate step-by-step probing.
+    # Handles both single-child wrappers (DictConfig with _target) and
+    # multi-child composites (ListConfig of DictConfigs with _target).
     if 'params' in node and node.params is not None:
         for key in node.params:
             child = node.params[key]
+            child_path = f'{path}.params.{key}'
             if isinstance(child, DictConfig) and '_target' in child:
-                inner_had_errors = _probe_node(resolver, child, f'{path}.params.{key}',
+                if child_path not in dataset_paths:
+                    continue
+                inner_had_errors = _probe_node(resolver, child, child_path,
+                                               branch_choices, dataset_paths,
                                                tensor_dir=tensor_dir)
                 if not inner_had_errors:
                     target_name = str(node._target).split('.')[-1]
                     _emit({'type': 'connector', 'label': f'Wrapped by {target_name}'})
+                break
+            elif isinstance(child, ListConfig) and len(child) > 0 and all(
+                isinstance(it, DictConfig) and '_target' in it for it in child
+            ):
+                total = len(child)
+                picked = branch_choices.get(child_path, 0)
+                if picked < 0 or picked >= total:
+                    picked = 0
+                branch_path = f'{child_path}[{picked}]'
+                if branch_path not in dataset_paths:
+                    continue
+                target_name = str(node._target).split('.')[-1]
+                inner_had_errors = _probe_node(
+                    resolver, child[picked], branch_path,
+                    branch_choices, dataset_paths, tensor_dir=tensor_dir,
+                )
+                if not inner_had_errors:
+                    _emit({'type': 'connector',
+                           'label': f'Branch {picked + 1}/{total} of {target_name}'})
                 break
 
     target_fqn = str(node._target)
@@ -406,7 +468,8 @@ def main():
         _probe_dataset(
             cfg,
             probe_config['datasetPath'],
-            probe_config.get('pathOverrides', {}),
+            probe_config.get('branchChoices', {}),
+            set(probe_config.get('datasetPaths', [])),
             tensor_dir=tensor_dir,
         )
     except Exception as e:

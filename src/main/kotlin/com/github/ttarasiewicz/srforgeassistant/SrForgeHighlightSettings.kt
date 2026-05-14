@@ -8,6 +8,15 @@ import com.intellij.openapi.components.Storage
 import com.intellij.util.messages.Topic
 import java.awt.Color
 
+/**
+ * Visual style for the Pipeline Probe block-flow visualization.
+ *
+ *  - [LEGACY]    fast, no animations, no shadows — the historical look.
+ *  - [POLISHED]  animated fade-in, soft drop shadows, gradient fills, hover
+ *                lift. Looks great, slightly more CPU on slower machines.
+ */
+enum class PipelineDisplayMode { LEGACY, POLISHED }
+
 @State(
     name = "SrForgeHighlightSettings",
     storages = [Storage("SrForgeAssistant.xml")]
@@ -39,7 +48,13 @@ class SrForgeHighlightSettings : PersistentStateComponent<SrForgeHighlightSettin
         var foldPlaceholderMaxLength: Int = 60,
 
         // Pipeline Probe
-        var probeTimeoutSeconds: Int = 120
+        var probeTimeoutSeconds: Int = 120,
+        var pathTraceDurationMs: Int = 400,
+        // The polished/timeline display mode is currently work-in-progress
+        // and disabled in the UI. The field is kept so saved settings and
+        // the chrome strategy code stay valid; [ProbeChrome.forCurrentMode]
+        // ignores the value and always returns the legacy chrome for now.
+        var pipelineDisplayMode: PipelineDisplayMode = PipelineDisplayMode.LEGACY
     )
 
     private var myState = SettingsState()

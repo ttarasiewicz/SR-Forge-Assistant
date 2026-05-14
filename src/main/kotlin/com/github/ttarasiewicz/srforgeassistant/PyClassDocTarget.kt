@@ -7,6 +7,7 @@ import com.intellij.model.Pointer
 import com.intellij.platform.backend.documentation.DocumentationResult
 import com.intellij.platform.backend.documentation.DocumentationTarget
 import com.intellij.platform.backend.presentation.TargetPresentation
+import com.intellij.psi.PsiNamedElement
 import com.intellij.util.ui.EmptyIcon
 import com.jetbrains.python.psi.PyClass
 import javax.swing.Icon
@@ -22,7 +23,7 @@ class PyClassDocTarget(pyClass: PyClass) : DocumentationTarget {
 
     override fun computePresentation(): TargetPresentation {
         val element = ptr.element
-        val qn = element?.qualifiedName ?: element?.name ?: "<class>"
+        val qn = element?.qualifiedName ?: (element as PsiNamedElement?)?.name ?: "<class>"
         val icon: Icon = element?.getIcon(0) ?: EmptyIcon.ICON_16
         return TargetPresentation.builder(qn).icon(icon).presentation()
     }
@@ -79,7 +80,7 @@ class PyClassDocTarget(pyClass: PyClass) : DocumentationTarget {
 
     override fun computeDocumentationHint(): String? {
         val element = ptr.element ?: return null
-        val qn = element.qualifiedName ?: element.name ?: "class"
+        val qn = element.qualifiedName ?: (element as PsiNamedElement).name ?: "class"
         return "<b>${DocHtmlRenderer.escape(qn)}</b>"
     }
 }

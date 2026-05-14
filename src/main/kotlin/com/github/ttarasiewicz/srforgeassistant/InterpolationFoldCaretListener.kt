@@ -7,7 +7,7 @@ import com.intellij.openapi.editor.event.CaretEvent
 import com.intellij.openapi.editor.event.CaretListener
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.project.Project
-import com.intellij.openapi.startup.StartupActivity
+import com.intellij.openapi.startup.ProjectActivity
 import com.intellij.openapi.util.Key
 
 /**
@@ -72,8 +72,8 @@ class InterpolationFoldCaretListener : CaretListener {
 /**
  * Registers [InterpolationFoldCaretListener] globally on project startup.
  */
-class InterpolationFoldStartup : StartupActivity.DumbAware {
-    override fun runActivity(project: Project) {
+class InterpolationFoldStartup : ProjectActivity {
+    override suspend fun execute(project: Project) {
         EditorFactory.getInstance().eventMulticaster
             .addCaretListener(InterpolationFoldCaretListener(), project)
     }

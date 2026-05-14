@@ -36,19 +36,38 @@ object ProbeScriptGenerator {
         yamlFilePath: String,
         datasetPath: String,
         pipeline: DatasetNode,
-        pathOverrides: Map<String, String>,
         projectPaths: List<String>,
+        branchChoices: Map<String, Int> = emptyMap(),
         tensorDir: String? = null
     ): String {
+        // The Python side can't tell datasets from transforms in a YAML list
+        // (both have `_target:`). Ship the Kotlin-side-resolved set of valid
+        // recursion paths so probe_script.py only recurses into actual datasets.
+        val datasetPaths = mutableSetOf<String>()
+        collectDatasetPaths(pipeline, datasetPaths)
+
         val config = mutableMapOf<String, Any?>(
             "yamlPath" to yamlFilePath,
             "datasetPath" to datasetPath,
-            "pathOverrides" to pathOverrides,
-            "projectPaths" to projectPaths
+            "projectPaths" to projectPaths,
+            "branchChoices" to branchChoices,
+            "datasetPaths" to datasetPaths.toList()
         )
         if (tensorDir != null) {
             config["tensorDir"] = tensorDir
         }
         return Gson().toJson(config)
+    }
+
+    /** Walk the DatasetNode tree, collecting paths the probe is allowed to recurse into. */
+    private fun collectDatasetPaths(node: DatasetNode, out: MutableSet<String>) {
+        node.wrappedDataset?.let {
+            out.add(it.path)
+            collectDatasetPaths(it, out)
+        }
+        for (branch in node.branches) {
+            out.add(branch.path)
+            collectDatasetPaths(branch, out)
+        }
     }
 }

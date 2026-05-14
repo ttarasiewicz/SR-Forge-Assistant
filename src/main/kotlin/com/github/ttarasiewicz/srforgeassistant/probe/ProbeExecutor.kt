@@ -113,7 +113,25 @@ object ProbeExecutor {
             indicator?.text = "Running pipeline probe..."
             handler.startNotify()
 
-            if (!handler.waitFor(TIMEOUT_MS.toLong())) {
+            // Poll the indicator so user-initiated Stop kills the Python
+            // process promptly. A single waitFor(TIMEOUT) wouldn't honor
+            // cancellation until the full timeout elapsed.
+            val deadline = System.currentTimeMillis() + TIMEOUT_MS
+            var canceled = false
+            while (!handler.isProcessTerminated) {
+                if (indicator?.isCanceled == true) {
+                    handler.destroyProcess()
+                    canceled = true
+                    break
+                }
+                if (System.currentTimeMillis() >= deadline) break
+                if (handler.waitFor(100L)) break
+            }
+
+            if (canceled) {
+                emitOnEdt(onEvent, ProbeEvent.Error("Probe canceled by user", null))
+                emitOnEdt(onEvent, ProbeEvent.Complete(0))
+            } else if (!handler.isProcessTerminated) {
                 handler.destroyProcess()
                 emitOnEdt(onEvent, ProbeEvent.Error(
                     "Probe timed out after ${TIMEOUT_MS / 1000} seconds", null

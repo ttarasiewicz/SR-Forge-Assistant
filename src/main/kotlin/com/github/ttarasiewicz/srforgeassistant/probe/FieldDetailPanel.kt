@@ -8,6 +8,7 @@ import com.intellij.util.ui.UIUtil
 import java.awt.*
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
+import java.awt.geom.RoundRectangle2D
 import javax.swing.*
 
 /**
@@ -21,41 +22,100 @@ private enum class DiffSide { AFTER, BEFORE }
  */
 class FieldDetailPanel(private val diffs: List<FieldDiff>, private val project: Project) : JPanel() {
 
+    /** Chrome bound at construction. Recreated panels get the fresh chrome. */
+    private val chrome: ProbeChrome = ProbeChrome.current
+
     init {
         layout = BoxLayout(this, BoxLayout.Y_AXIS)
         isOpaque = false
 
-        for (diff in diffs) {
+        val (visibleDiffs, hiddenCount) = partitionDiffs(diffs)
+        for (diff in visibleDiffs) {
             add(createFieldBlock(diff))
-            add(Box.createVerticalStrut(JBUI.scale(3)))
+            add(vstrut(JBUI.scale(3)))
         }
+        if (hiddenCount > 0) {
+            add(createShowUnchangedToggle(hiddenCount))
+        }
+    }
+
+    /**
+     * Left-aligned vertical strut.
+     *
+     * `Box.createVerticalStrut(h)` returns a Filler whose default
+     * `alignmentX` is `CENTER` (0.5). Mixing CENTER-aligned struts with
+     * LEFT-aligned rows inside a [BoxLayout] Y_AXIS container shifts the
+     * layout's "baseline" rightward — symptom: the LEFT children visibly
+     * drift toward the right, more so as siblings' preferred widths shrink.
+     * Using a uniformly LEFT-aligned strut keeps every child at the same
+     * anchor and prevents the drift.
+     */
+    private fun vstrut(h: Int): Component = Box.createVerticalStrut(h).apply {
+        (this as JComponent).alignmentX = Component.LEFT_ALIGNMENT
+    }
+
+    /**
+     * Split [diffs] into the rows the chrome wants visible and a count of
+     * what's stashed away. Polished chrome hides UNCHANGED rows behind a
+     * "show all" toggle to keep the view focused on actual changes.
+     */
+    private fun partitionDiffs(diffs: List<FieldDiff>): Pair<List<FieldDiff>, Int> {
+        if (!chrome.hideUnchangedFieldsByDefault) return diffs to 0
+        val visible = diffs.filter { it.status != FieldDiffStatus.UNCHANGED }
+        val hiddenCount = diffs.size - visible.size
+        // If everything is unchanged, fall back to showing them — an empty
+        // step view (with only a "show 3 unchanged" toggle) feels broken.
+        if (visible.isEmpty()) return diffs to 0
+        return visible to hiddenCount
+    }
+
+    /**
+     * Returns a small clickable label that, when clicked, expands all hidden
+     * UNCHANGED rows in place above itself. After expansion the toggle hides.
+     */
+    private fun createShowUnchangedToggle(hiddenCount: Int): JComponent {
+        val label = JBLabel("Show $hiddenCount unchanged").apply {
+            foreground = UIUtil.getInactiveTextColor()
+            font = font.deriveFont(Font.ITALIC, font.size - 1f)
+            border = JBUI.Borders.empty(4, 14, 4, 8)
+            cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+            alignmentX = Component.LEFT_ALIGNMENT
+        }
+        label.addMouseListener(object : MouseAdapter() {
+            override fun mouseClicked(e: MouseEvent) {
+                val toggleIndex = (0 until componentCount).firstOrNull { getComponent(it) === label } ?: return
+                // Insert hidden UNCHANGED diffs just before the toggle.
+                val unchanged = diffs.filter { it.status == FieldDiffStatus.UNCHANGED }
+                var insertAt = toggleIndex
+                for (d in unchanged) {
+                    add(createFieldBlock(d), insertAt++)
+                    add(vstrut(JBUI.scale(3)), insertAt++)
+                }
+                remove(label)
+                revalidate()
+                repaint()
+            }
+        })
+        return label
     }
 
     private fun createFieldBlock(diff: FieldDiff): JPanel {
         val field = diff.after ?: diff.before ?: return JPanel()
-        val borderColor = diffBorderColor(diff.status)
-        val bgColor = diffBackground(diff.status)
         val statusIcon = statusIcon(diff.status)
 
-        val block = JPanel().apply {
+        val block = FieldCard(diff.status).apply {
             layout = BoxLayout(this, BoxLayout.Y_AXIS)
-            alignmentX = Component.LEFT_ALIGNMENT
-            maximumSize = Dimension(Int.MAX_VALUE, Int.MAX_VALUE)
-            border = BorderFactory.createCompoundBorder(
-                BorderFactory.createMatteBorder(0, JBUI.scale(3), 0, 0, borderColor),
-                JBUI.Borders.empty(0, 0)
-            )
         }
 
-        val headerPanel = createHeaderPanel(diff, field, statusIcon, bgColor)
-        val bodyPanel = createBodyPanel(diff, field, bgColor)
+        val headerPanel = createHeaderPanel(diff, field, statusIcon, block.legacyHeaderBg)
+        val bodyPanel = createBodyPanel(diff, field, block.legacyChildBg)
 
+        val chevron = headerPanel.getClientProperty("chevronToggle") as JComponent
         headerPanel.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
         headerPanel.addMouseListener(object : MouseAdapter() {
             override fun mouseClicked(e: MouseEvent) {
                 bodyPanel.isVisible = !bodyPanel.isVisible
-                val indicator = headerPanel.getClientProperty("collapseLabel") as? JBLabel
-                indicator?.text = if (bodyPanel.isVisible) "\u25BE" else "\u25B8"
+                chrome.setChevronExpanded(chevron, bodyPanel.isVisible)
                 block.revalidate()
                 block.repaint()
             }
@@ -76,8 +136,9 @@ class FieldDetailPanel(private val diffs: List<FieldDiff>, private val project: 
         val shapeSummary = buildShapeSummary(field)
 
         val panel = JPanel(BorderLayout()).apply {
+            alignmentX = Component.LEFT_ALIGNMENT
             maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(26))
-            border = JBUI.Borders.empty(3, 8, 3, 8)
+            border = chrome.fieldHeaderPadding
             if (bgColor != null) {
                 background = bgColor
                 isOpaque = true
@@ -90,12 +151,13 @@ class FieldDetailPanel(private val diffs: List<FieldDiff>, private val project: 
             isOpaque = false
         }
 
-        val collapseLabel = JBLabel("\u25B8").apply {
-            foreground = UIUtil.getInactiveTextColor()
-            font = font.deriveFont(Font.PLAIN, font.size - 1f)
-        }
-        panel.putClientProperty("collapseLabel", collapseLabel)
-        leftPanel.add(collapseLabel)
+        val labelFont = UIUtil.getLabelFont()
+        val chevron = chrome.newChevron(
+            initialExpanded = false,
+            legacyFont = labelFont.deriveFont(Font.PLAIN, labelFont.size - 1f),
+        )
+        panel.putClientProperty("chevronToggle", chevron)
+        leftPanel.add(chevron)
 
         if (statusIcon.isNotEmpty()) {
             leftPanel.add(JBLabel(statusIcon).apply {
@@ -155,7 +217,8 @@ class FieldDetailPanel(private val diffs: List<FieldDiff>, private val project: 
     private fun createBodyPanel(diff: FieldDiff, field: FieldSnapshot, bgColor: Color?): JPanel {
         val panel = JPanel().apply {
             layout = BoxLayout(this, BoxLayout.Y_AXIS)
-            border = JBUI.Borders.empty(2, 20, 6, 8)
+            alignmentX = Component.LEFT_ALIGNMENT
+            border = JBUI.Borders.empty(2, EXPANDED_BODY_INDENT, 6, 8)
             if (bgColor != null) {
                 background = bgColor
                 isOpaque = true
@@ -167,16 +230,25 @@ class FieldDetailPanel(private val diffs: List<FieldDiff>, private val project: 
 
         when (diff.status) {
             FieldDiffStatus.MODIFIED -> {
-                if (diff.after != null) {
-                    panel.add(createCollapsibleSection(
-                        "After:", diff.after, diff.childDiffs, DiffSide.AFTER, bgColor, startExpanded = true
-                    ))
-                }
-                if (diff.before != null) {
-                    panel.add(Box.createVerticalStrut(JBUI.scale(2)))
-                    panel.add(createCollapsibleSection(
-                        "Before:", diff.before, diff.childDiffs, DiffSide.BEFORE, bgColor, startExpanded = false
-                    ))
+                if (chrome.inlineScalarDiff
+                    && diff.before != null && diff.after != null
+                    && diff.childDiffs.isNullOrEmpty()
+                ) {
+                    // Inline "before → after" rows — one per changed stat —
+                    // instead of an After:/Before: accordion.
+                    addInlineChanges(panel, diff.before, diff.after)
+                } else {
+                    if (diff.after != null) {
+                        panel.add(createCollapsibleSection(
+                            "After:", diff.after, diff.childDiffs, DiffSide.AFTER, bgColor, startExpanded = true
+                        ))
+                    }
+                    if (diff.before != null) {
+                        panel.add(vstrut(JBUI.scale(2)))
+                        panel.add(createCollapsibleSection(
+                            "Before:", diff.before, diff.childDiffs, DiffSide.BEFORE, bgColor, startExpanded = false
+                        ))
+                    }
                 }
             }
             FieldDiffStatus.REMOVED -> {
@@ -191,7 +263,7 @@ class FieldDetailPanel(private val diffs: List<FieldDiff>, private val project: 
                 val monoFont = Font(Font.MONOSPACED, Font.PLAIN, UIUtil.getFontSize(UIUtil.FontSize.SMALL).toInt())
                 addSnapshotStats(panel, field, monoFont, UIUtil.getLabelForeground())
                 if (!diff.childDiffs.isNullOrEmpty()) {
-                    panel.add(Box.createVerticalStrut(JBUI.scale(4)))
+                    panel.add(vstrut(JBUI.scale(4)))
                     val childPanel = FieldDetailPanel(diff.childDiffs, project)
                     childPanel.alignmentX = Component.LEFT_ALIGNMENT
                     panel.add(childPanel)
@@ -200,6 +272,154 @@ class FieldDetailPanel(private val diffs: List<FieldDiff>, private val project: 
         }
 
         return panel
+    }
+
+    /**
+     * Render a compact list of `stat: before → after` rows for the changed
+     * fields of a MODIFIED diff. Shape changes get highlighted dimension-by-
+     * dimension so the eye lands on the actual size differences.
+     */
+    private fun addInlineChanges(parent: JPanel, before: FieldSnapshot, after: FieldSnapshot) {
+        val monoFont = Font(Font.MONOSPACED, Font.PLAIN, UIUtil.getFontSize(UIUtil.FontSize.SMALL).toInt())
+        val labelColor = UIUtil.getLabelForeground()
+        val mutedColor = UIUtil.getInactiveTextColor()
+
+        // Shape gets a dedicated dim-by-dim diff because it's the most common
+        // and most meaningful change in ML pipelines.
+        if (before.shape != null && after.shape != null && before.shape != after.shape) {
+            parent.add(buildShapeDiffRow(before.shape, after.shape, monoFont, labelColor, mutedColor))
+        } else if (before.shape != after.shape) {
+            parent.add(buildInlineRow("shape", before.shape ?: "—", after.shape ?: "—", monoFont, labelColor, mutedColor))
+        }
+
+        // Other stats: dtype, min/max, mean, std, preview.
+        val stats: List<Triple<String, String?, String?>> = listOf(
+            Triple("dtype", before.dtype, after.dtype),
+            Triple("min",   before.minValue, after.minValue),
+            Triple("max",   before.maxValue, after.maxValue),
+            Triple("mean",  before.meanValue, after.meanValue),
+            Triple("std",   before.stdValue, after.stdValue),
+            Triple("value", before.preview, after.preview),
+        )
+        for ((label, b, a) in stats) {
+            if (b != a && !(b.isNullOrBlank() && a.isNullOrBlank())) {
+                parent.add(buildInlineRow(label, b ?: "—", a ?: "—", monoFont, labelColor, mutedColor))
+            }
+        }
+    }
+
+    /**
+     * Build a single `label  before  →  after` row using monospace formatting.
+     * Visually compact; values are colour-coded when they're scalar so the
+     * before reads as muted/strikethrough and the after as the value of record.
+     */
+    private fun buildInlineRow(
+        label: String,
+        before: String,
+        after: String,
+        monoFont: Font,
+        labelColor: Color,
+        mutedColor: Color,
+    ): JComponent {
+        val row = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(6), 0)).apply {
+            isOpaque = false
+            alignmentX = Component.LEFT_ALIGNMENT
+            maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(20))
+        }
+        row.add(JBLabel(label).apply {
+            font = monoFont.deriveFont(Font.BOLD)
+            foreground = labelColor
+        })
+        row.add(JBLabel(before).apply {
+            font = monoFont
+            foreground = mutedColor
+        })
+        row.add(JBLabel("→").apply {
+            font = monoFont
+            foreground = mutedColor
+        })
+        row.add(JBLabel(after).apply {
+            font = monoFont
+            foreground = labelColor
+        })
+        return row
+    }
+
+    /**
+     * Specialised shape-diff renderer. Each dimension is rendered as its own
+     * small chip; dimensions that actually changed get a coloured tint so the
+     * eye instantly lands on the changed axes.
+     */
+    private fun buildShapeDiffRow(
+        beforeShape: String,
+        afterShape: String,
+        monoFont: Font,
+        labelColor: Color,
+        mutedColor: Color,
+    ): JComponent {
+        val row = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(6), 0)).apply {
+            isOpaque = false
+            alignmentX = Component.LEFT_ALIGNMENT
+            maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(22))
+        }
+        row.add(JBLabel("shape").apply {
+            font = monoFont.deriveFont(Font.BOLD)
+            foreground = labelColor
+        })
+        row.add(buildShapeChips(beforeShape, afterShape, beforeSide = true, monoFont, labelColor, mutedColor))
+        row.add(JBLabel("→").apply {
+            font = monoFont
+            foreground = mutedColor
+        })
+        row.add(buildShapeChips(afterShape, beforeShape, beforeSide = false, monoFont, labelColor, mutedColor))
+        return row
+    }
+
+    private fun buildShapeChips(
+        ownShape: String,
+        otherShape: String,
+        beforeSide: Boolean,
+        monoFont: Font,
+        labelColor: Color,
+        mutedColor: Color,
+    ): JComponent {
+        val own = parseShapeDims(ownShape)
+        val other = parseShapeDims(otherShape)
+        val row = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(2), 0)).apply {
+            isOpaque = false
+        }
+        for ((i, dim) in own.withIndex()) {
+            val changed = i >= other.size || other[i] != dim
+            val chip = JBLabel(dim).apply {
+                font = monoFont
+                foreground = if (changed) {
+                    if (beforeSide) FieldDetailPanel.diffStatusColor(FieldDiffStatus.REMOVED)
+                    else FieldDetailPanel.diffStatusColor(FieldDiffStatus.ADDED)
+                } else mutedColor
+            }
+            row.add(chip)
+            if (i < own.size - 1) {
+                row.add(JBLabel(",").apply {
+                    font = monoFont
+                    foreground = mutedColor
+                })
+            }
+        }
+        // Wrap with brackets.
+        val wrap = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
+            isOpaque = false
+        }
+        wrap.add(JBLabel("(").apply { font = monoFont; foreground = mutedColor })
+        wrap.add(row)
+        wrap.add(JBLabel(")").apply { font = monoFont; foreground = mutedColor })
+        return wrap
+    }
+
+    /** Parse "(3, 224, 224)" or "3 x 224 x 224" or "3,224,224" into ["3","224","224"]. */
+    private fun parseShapeDims(s: String): List<String> {
+        // Strip parens/brackets and split on common delimiters.
+        val cleaned = s.trim().removePrefix("(").removeSuffix(")").removePrefix("[").removeSuffix("]")
+        return cleaned.split(",", "x", "×").map { it.trim() }.filter { it.isNotEmpty() }
     }
 
     /**
@@ -228,7 +448,13 @@ class FieldDetailPanel(private val diffs: List<FieldDiff>, private val project: 
 
         val contentPanel = JPanel().apply {
             layout = BoxLayout(this, BoxLayout.Y_AXIS)
-            border = JBUI.Borders.emptyLeft(16)
+            alignmentX = Component.LEFT_ALIGNMENT
+            // No extra indent here — the outer body already supplied the
+            // single indent step. Adding another layer of EXPANDED_BODY_INDENT
+            // here would compound: MODIFIED diffs go through bodyPanel +
+            // section.contentPanel and would end up at 2× the indent of
+            // UNCHANGED diffs (which only go through bodyPanel).
+            border = JBUI.Borders.empty()
             if (bgColor != null) {
                 background = bgColor
                 isOpaque = true
@@ -248,7 +474,7 @@ class FieldDetailPanel(private val diffs: List<FieldDiff>, private val project: 
             }
         }
         if (!visibleChildren.isNullOrEmpty()) {
-            contentPanel.add(Box.createVerticalStrut(JBUI.scale(4)))
+            contentPanel.add(vstrut(JBUI.scale(4)))
             val childPanel = SidedChildPanel(visibleChildren, side, bgColor)
             childPanel.alignmentX = Component.LEFT_ALIGNMENT
             contentPanel.add(childPanel)
@@ -262,10 +488,13 @@ class FieldDetailPanel(private val diffs: List<FieldDiff>, private val project: 
             cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
         }
 
-        val collapseLabel = JBLabel(if (startExpanded) "\u25BE" else "\u25B8").apply {
-            foreground = UIUtil.getInactiveTextColor()
-            font = monoFont.deriveFont(Font.PLAIN, font.size - 1f)
-        }
+        val sectionChevronLegacyFont = monoFont.deriveFont(
+            Font.PLAIN, UIUtil.getLabelFont().size - 1f
+        )
+        val collapseLabel = chrome.newChevron(
+            initialExpanded = startExpanded,
+            legacyFont = sectionChevronLegacyFont,
+        )
         headerPanel.add(collapseLabel)
         headerPanel.add(JBLabel(label).apply {
             font = monoFont.deriveFont(Font.BOLD)
@@ -275,7 +504,7 @@ class FieldDetailPanel(private val diffs: List<FieldDiff>, private val project: 
         headerPanel.addMouseListener(object : MouseAdapter() {
             override fun mouseClicked(e: MouseEvent) {
                 contentPanel.isVisible = !contentPanel.isVisible
-                collapseLabel.text = if (contentPanel.isVisible) "\u25BE" else "\u25B8"
+                chrome.setChevronExpanded(collapseLabel, contentPanel.isVisible)
                 wrapper.revalidate()
                 wrapper.repaint()
             }
@@ -301,7 +530,7 @@ class FieldDetailPanel(private val diffs: List<FieldDiff>, private val project: 
 
             for (diff in childDiffs) {
                 add(createChildBlock(diff))
-                add(Box.createVerticalStrut(JBUI.scale(2)))
+                add(vstrut(JBUI.scale(2)))
             }
         }
 
@@ -311,17 +540,10 @@ class FieldDetailPanel(private val diffs: List<FieldDiff>, private val project: 
                 DiffSide.BEFORE -> diff.before
             } ?: return JPanel()
 
-            val borderColor = diffBorderColor(diff.status)
             val icon = statusIcon(diff.status)
 
-            val block = JPanel().apply {
+            val block = FieldCard(diff.status).apply {
                 layout = BoxLayout(this, BoxLayout.Y_AXIS)
-                alignmentX = Component.LEFT_ALIGNMENT
-                maximumSize = Dimension(Int.MAX_VALUE, Int.MAX_VALUE)
-                border = BorderFactory.createCompoundBorder(
-                    BorderFactory.createMatteBorder(0, JBUI.scale(3), 0, 0, borderColor),
-                    JBUI.Borders.empty(0, 0)
-                )
             }
 
             val monoFont = Font(Font.MONOSPACED, Font.PLAIN, UIUtil.getFontSize(UIUtil.FontSize.SMALL).toInt())
@@ -334,8 +556,9 @@ class FieldDetailPanel(private val diffs: List<FieldDiff>, private val project: 
             val childHint = if (childCount > 0) "  ($childCount elements)" else ""
 
             val headerPanel = JPanel(BorderLayout()).apply {
+                alignmentX = Component.LEFT_ALIGNMENT
                 maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(26))
-                border = JBUI.Borders.empty(3, 8, 3, 8)
+                border = chrome.fieldHeaderPadding
                 isOpaque = false
             }
 
@@ -343,10 +566,13 @@ class FieldDetailPanel(private val diffs: List<FieldDiff>, private val project: 
                 isOpaque = false
             }
 
-            val collapseLabel = JBLabel("\u25B8").apply {
-                foreground = UIUtil.getInactiveTextColor()
-                font = monoFont.deriveFont(Font.PLAIN, font.size - 1f)
-            }
+            val childChevronLegacyFont = monoFont.deriveFont(
+                Font.PLAIN, UIUtil.getLabelFont().size - 1f
+            )
+            val collapseLabel = chrome.newChevron(
+                initialExpanded = false,
+                legacyFont = childChevronLegacyFont,
+            )
             leftPanel.add(collapseLabel)
 
             if (icon.isNotEmpty()) {
@@ -398,7 +624,8 @@ class FieldDetailPanel(private val diffs: List<FieldDiff>, private val project: 
             // Body
             val bodyPanel = JPanel().apply {
                 layout = BoxLayout(this, BoxLayout.Y_AXIS)
-                border = JBUI.Borders.empty(2, 20, 6, 8)
+                alignmentX = Component.LEFT_ALIGNMENT
+                border = JBUI.Borders.empty(2, EXPANDED_BODY_INDENT, 6, 8)
                 isOpaque = false
                 isVisible = false
             }
@@ -413,7 +640,7 @@ class FieldDetailPanel(private val diffs: List<FieldDiff>, private val project: 
                 }
             }
             if (!nestedChildDiffs.isNullOrEmpty()) {
-                bodyPanel.add(Box.createVerticalStrut(JBUI.scale(4)))
+                bodyPanel.add(vstrut(JBUI.scale(4)))
                 val nestedPanel = SidedChildPanel(nestedChildDiffs, side, bgColor)
                 nestedPanel.alignmentX = Component.LEFT_ALIGNMENT
                 bodyPanel.add(nestedPanel)
@@ -423,7 +650,7 @@ class FieldDetailPanel(private val diffs: List<FieldDiff>, private val project: 
             headerPanel.addMouseListener(object : MouseAdapter() {
                 override fun mouseClicked(e: MouseEvent) {
                     bodyPanel.isVisible = !bodyPanel.isVisible
-                    collapseLabel.text = if (bodyPanel.isVisible) "\u25BE" else "\u25B8"
+                    chrome.setChevronExpanded(collapseLabel, bodyPanel.isVisible)
                     block.revalidate()
                     block.repaint()
                 }
@@ -451,14 +678,48 @@ class FieldDetailPanel(private val diffs: List<FieldDiff>, private val project: 
     }
 
     private fun addDetailRow(panel: JPanel, label: String, value: String, font: Font, color: Color) {
-        val row = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(6), 0)).apply {
+        // BorderLayout (not FlowLayout): the value goes in CENTER, which
+        // absorbs whatever width is left after the label. JLabel auto-
+        // ellipsizes its text via SwingUtilities.layoutCompoundLabel when
+        // its bounds are narrower than its natural text width, so the value
+        // dynamically truncates to fit the current window width and ends
+        // with "…" instead of disappearing into a wrapped line that the row's
+        // height cap would have clipped away.
+        val row = JPanel(BorderLayout(JBUI.scale(6), 0)).apply {
             isOpaque = false
             alignmentX = Component.LEFT_ALIGNMENT
             maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(18))
         }
-        row.add(JBLabel(label).apply { this.font = font.deriveFont(Font.BOLD); foreground = color })
-        row.add(JBLabel(value).apply { this.font = font; foreground = color })
+        row.add(
+            JBLabel(label).apply { this.font = font.deriveFont(Font.BOLD); foreground = color },
+            BorderLayout.WEST,
+        )
+
+        // The 180-char cap is still applied as an upper bound (so the tooltip
+        // doesn't end up holding kilobytes for a tensor preview), but the
+        // *visible* truncation is now driven by paint-time ellipsis based on
+        // the actual row width — it updates live with window resize.
+        val displayValue = truncateForDetailRow(value)
+        val valueLabel = JBLabel(displayValue).apply {
+            this.font = font
+            foreground = color
+            if (displayValue != value) toolTipText = value
+            // Allow JLabel to shrink below its preferred width so its
+            // internal layoutCompoundLabel can ellipsize.
+            minimumSize = Dimension(0, JBUI.scale(18))
+        }
+        row.add(valueLabel, BorderLayout.CENTER)
         panel.add(row)
+    }
+
+    private fun truncateForDetailRow(value: String): String {
+        val firstLine = value.substringBefore('\n')
+        val truncatedNewline = firstLine.length < value.length
+        return if (firstLine.length > DETAIL_ROW_MAX_CHARS) {
+            firstLine.take(DETAIL_ROW_MAX_CHARS) + "…"
+        } else if (truncatedNewline) {
+            "$firstLine…"
+        } else value
     }
 
     private fun buildShapeSummary(field: FieldSnapshot): String {
@@ -469,6 +730,19 @@ class FieldDetailPanel(private val diffs: List<FieldDiff>, private val project: 
     }
 
     companion object {
+        /** Max characters of a single "value" preview shown inline before
+         *  it gets truncated with "…" and the full text moves to a tooltip.
+         *  Tuned so a typical tool-window width still fits the row plus its
+         *  trailing controls (e.g. the Visualize button) without forcing a
+         *  horizontal scroll. */
+        private const val DETAIL_ROW_MAX_CHARS = 180
+
+        /** Subtle left indent for an expanded field's body (stats + nested
+         *  rows). Kept small on purpose — deeply nested diffs compound this
+         *  inset multiple times, so a large value would push deep rows far
+         *  off the left edge. */
+        private const val EXPANDED_BODY_INDENT = 6
+
         private val BORDER_ADDED = JBColor(Color(0x4CAF50), Color(0x388E3C))
         private val BORDER_REMOVED = JBColor(Color(0xF44336), Color(0xD32F2F))
         private val BORDER_MODIFIED = JBColor(Color(0xFFC107), Color(0xFFA000))
@@ -511,6 +785,129 @@ class FieldDetailPanel(private val diffs: List<FieldDiff>, private val project: 
             bytes < 1024 * 1024 -> "%.1f KB".format(bytes / 1024.0)
             bytes < 1024 * 1024 * 1024 -> "%.1f MB".format(bytes / (1024.0 * 1024))
             else -> "%.2f GB".format(bytes / (1024.0 * 1024 * 1024))
+        }
+    }
+}
+
+/**
+ * Container for one diff row in the field-detail panel. Captures the
+ * current [ProbeChrome] at construction and delegates every visual decision
+ * (border, paint, hover animation, status colours) to it. The chrome
+ * installs/uninstalls per-card state via [addNotify] / [removeNotify], so
+ * timers and listeners are cleaned up automatically when the card is
+ * detached from the tree (e.g. on a chrome hot-swap).
+ *
+ * Callers use [legacyHeaderBg] / [legacyChildBg] to learn whether the
+ * chrome wants header/body panels to paint their own opaque background; in
+ * polished chrome both are null because FieldCard paints the entire card.
+ */
+class FieldCard(val status: FieldDiffStatus) : JPanel() {
+
+    val chrome: ProbeChrome = ProbeChrome.current
+
+    val legacyHeaderBg: Color? = chrome.fieldHeaderLegacyBg(status)
+    val legacyChildBg: Color? = chrome.fieldChildLegacyBg(status)
+
+    init {
+        // isOpaque is left to the chrome (set in installFieldCard) — legacy
+        // wants the panel-default fill (opaque = true), polished paints its
+        // own rounded card on a transparent base (opaque = false).
+        alignmentX = Component.LEFT_ALIGNMENT
+        maximumSize = Dimension(Int.MAX_VALUE, Int.MAX_VALUE)
+    }
+
+    override fun addNotify() {
+        super.addNotify()
+        chrome.installFieldCard(this)
+    }
+
+    override fun removeNotify() {
+        chrome.uninstallFieldCard(this)
+        super.removeNotify()
+    }
+
+    final override fun paintComponent(g: Graphics) {
+        // super first: if isOpaque, fills with the L&F panel default (this is
+        // what legacy chrome relies on for UNCHANGED rows). If not opaque
+        // (polished), super is a no-op and the chrome's custom paint takes over.
+        super.paintComponent(g)
+        chrome.paintFieldCardBackground(this, g)
+    }
+}
+
+/**
+ * Tiny chevron widget rendered by [PolishedProbeChrome]: a smoothly rotating
+ * triangle that animates between "collapsed" (pointing right) and "expanded"
+ * (pointing down) over ~140 ms. Legacy chrome doesn't use this — it returns
+ * a `JBLabel` text glyph instead.
+ */
+class AnimatedChevron : JComponent() {
+
+    var expanded: Boolean = false
+        set(value) {
+            if (field == value) return
+            field = value
+            animateTo(if (value) 1f else 0f)
+        }
+
+    /** 0 = pointing right (collapsed); 1 = pointing down (expanded). */
+    private var rotation: Float = 0f
+    private var rotFrom = 0f
+    private var rotTo = 0f
+    private var animStart = 0L
+    private val timer: Timer = Timer(16) { tick() }
+
+    init {
+        isOpaque = false
+        preferredSize = Dimension(JBUI.scale(12), JBUI.scale(14))
+    }
+
+    override fun getMinimumSize(): Dimension = preferredSize
+    override fun getMaximumSize(): Dimension = preferredSize
+
+    override fun removeNotify() {
+        timer.stop()
+        super.removeNotify()
+    }
+
+    private fun animateTo(target: Float) {
+        rotFrom = rotation
+        rotTo = target
+        animStart = System.currentTimeMillis()
+        if (!timer.isRunning) timer.start()
+    }
+
+    private fun tick() {
+        val t = ((System.currentTimeMillis() - animStart) / 140.0).coerceIn(0.0, 1.0)
+        val x = 1.0 - t
+        val eased = (1.0 - x * x * x).toFloat()
+        rotation = rotFrom + (rotTo - rotFrom) * eased
+        repaint()
+        if (t >= 1.0) {
+            rotation = rotTo
+            timer.stop()
+        }
+    }
+
+    override fun paintComponent(g: Graphics) {
+        val g2 = (g as Graphics2D).create() as Graphics2D
+        try {
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+            g2.color = UIUtil.getInactiveTextColor()
+            val cx = width / 2.0
+            val cy = height / 2.0
+            val angle = Math.PI / 2 * rotation
+            g2.translate(cx, cy)
+            g2.rotate(angle)
+            val s = JBUI.scale(3)
+            val tri = Polygon(
+                intArrayOf(-s, -s, (s * 1.2).toInt()),
+                intArrayOf(-s, s, 0),
+                3,
+            )
+            g2.fillPolygon(tri)
+        } finally {
+            g2.dispose()
         }
     }
 }

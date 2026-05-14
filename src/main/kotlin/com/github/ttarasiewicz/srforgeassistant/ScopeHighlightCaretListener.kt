@@ -14,7 +14,7 @@ import com.intellij.openapi.editor.markup.RangeHighlighter
 import com.intellij.openapi.editor.markup.TextAttributes
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.project.Project
-import com.intellij.openapi.startup.StartupActivity
+import com.intellij.openapi.startup.ProjectActivity
 import com.intellij.openapi.util.Key
 import com.intellij.openapi.util.TextRange
 import com.intellij.psi.PsiDocumentManager
@@ -271,8 +271,8 @@ class ScopeHighlightCaretListener : CaretListener, DocumentListener {
  * Registers [ScopeHighlightCaretListener] globally on project startup
  * and subscribes to settings changes for live highlight updates.
  */
-class ScopeHighlightStartup : StartupActivity.DumbAware {
-    override fun runActivity(project: Project) {
+class ScopeHighlightStartup : ProjectActivity {
+    override suspend fun execute(project: Project) {
         val listener = ScopeHighlightCaretListener()
         val multicaster = EditorFactory.getInstance().eventMulticaster
         multicaster.addCaretListener(listener, project)
