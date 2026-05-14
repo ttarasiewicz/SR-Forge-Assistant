@@ -65,8 +65,8 @@ class DatasetMarkerMode(
     private var timer: Timer? = null
     private var mouseListener: EditorMouseListener? = null
     private var mouseMotionListener: EditorMouseMotionListener? = null
-    private var wheelDispatcher: IdeEventQueue.NonLockedEventDispatcher? = null
-    private var keyDispatcher: IdeEventQueue.NonLockedEventDispatcher? = null
+    private var wheelDispatcher: IdeEventQueue.EventDispatcher? = null
+    private var keyDispatcher: IdeEventQueue.EventDispatcher? = null
     private var visibleAreaListener: com.intellij.openapi.editor.event.VisibleAreaListener? = null
     private var startTime: Long = 0L
     private var hoverIndex: Int = -1
@@ -167,7 +167,13 @@ class DatasetMarkerMode(
         // editor's own bindings (clear selection, dismiss intentions, etc.)
         // consume it. Returning true from the dispatcher suppresses further
         // dispatch — one Esc press exits the mode, exactly.
-        keyDispatcher = object : IdeEventQueue.NonLockedEventDispatcher {
+        //
+        // EventDispatcher (not NonLockedEventDispatcher) for back-compat:
+        // NonLockedEventDispatcher only exists in IntelliJ 2025.3+ and would
+        // make this plugin fail to load on 2024.3-2025.2. The EventDispatcher
+        // overloads are deprecated in 253+ but still functional.
+        @Suppress("DEPRECATION")
+        keyDispatcher = object : IdeEventQueue.EventDispatcher {
             override fun dispatch(e: AWTEvent): Boolean {
                 if (active &&
                     e is KeyEvent &&
@@ -187,7 +193,8 @@ class DatasetMarkerMode(
         // editor's normal scroll dispatch run. Attaching a regular
         // MouseWheelListener to the content component blocks the editor's
         // scroll dispatcher even without consume(), so it's not an option.
-        wheelDispatcher = object : IdeEventQueue.NonLockedEventDispatcher {
+        @Suppress("DEPRECATION")
+        wheelDispatcher = object : IdeEventQueue.EventDispatcher {
             override fun dispatch(e: AWTEvent): Boolean {
                 if (!active || e !is MouseWheelEvent) return false
                 return handleWheel(e)
@@ -325,8 +332,10 @@ class DatasetMarkerMode(
         mouseMotionListener = null
         visibleAreaListener?.let { editor.scrollingModel.removeVisibleAreaListener(it) }
         visibleAreaListener = null
+        @Suppress("DEPRECATION")
         wheelDispatcher?.let { IdeEventQueue.getInstance().removeDispatcher(it) }
         wheelDispatcher = null
+        @Suppress("DEPRECATION")
         keyDispatcher?.let { IdeEventQueue.getInstance().removeDispatcher(it) }
         keyDispatcher = null
         hoverIndex = -1
